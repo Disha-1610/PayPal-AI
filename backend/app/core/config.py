@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,6 +14,11 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql://postgres:postgres@localhost:5432/paypal_ai"
     checkpoint_sqlite_path: str = "checkpoints.sqlite"
+
+    llm_provider: str = "gemini"
+    llm_model: str = "gemini-2.5-flash"
+    llm_api_key: SecretStr | None = None
+    llm_timeout_seconds: float = 30.0
 
     @property
     def is_sqlite(self) -> bool:

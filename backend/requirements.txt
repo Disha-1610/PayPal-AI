@@ -12,3 +12,4 @@ langgraph-checkpoint-postgres
 langgraph-checkpoint-sqlite
 pytest
 pytest-asyncio
+google-genai
