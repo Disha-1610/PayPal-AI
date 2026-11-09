@@ -9,7 +9,9 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Self
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 AttributeValue = str | int | float | bool | list[str]
 
@@ -36,6 +38,7 @@ class Candidate(BaseModel):
     currency: str | None = Field(default=None, min_length=3, max_length=3)
     rating: float | None = Field(default=None, ge=0, le=5)
     review_count: int | None = Field(default=None, ge=0)
+    first_review_at: datetime | None = Field(default=None, description="Earliest review date (burst detection)")
     latest_review_at: datetime | None = None
     complaint_count: int | None = Field(default=None, ge=0)
     return_window_days: int | None = Field(default=None, ge=0)
@@ -45,3 +48,9 @@ class Candidate(BaseModel):
     quality: dict[str, DataQuality] = Field(default_factory=dict, description="field name -> quality flag")
     text_refs: tuple[str, ...] = ()
     fetched_at: datetime = Field(default_factory=_utcnow)
+
+    @model_validator(mode="after")
+    def _check_review_dates(self) -> Self:
+        if self.first_review_at and self.latest_review_at and self.first_review_at > self.latest_review_at:
+            raise ValueError("first_review_at must not be after latest_review_at")
+        return self
