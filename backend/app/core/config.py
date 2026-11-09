@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     llm_api_key: SecretStr | None = None
     llm_timeout_seconds: float = 30.0
 
+    channel3_api_key: SecretStr | None = None
+    channel3_base_url: str = "https://api.trychannel3.com"
+    channel3_country: str | None = None  # e.g. "US"; Channel3 infers defaults when unset
+    channel3_currency: str | None = None  # e.g. "USD"
+    channel3_timeout_seconds: float = 10.0
+
     @property
     def is_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")

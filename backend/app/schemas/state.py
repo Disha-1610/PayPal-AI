@@ -12,6 +12,7 @@ from operator import add
 from typing import Annotated, TypedDict
 
 from app.schemas.authorization import Approval, TaskAuthorization
+from app.schemas.candidate import Candidate
 from app.schemas.constraints import Constraint, ConstraintDiff, ConstraintSource, diff_constraints
 
 STATE_VERSION = 1
@@ -68,7 +69,7 @@ class TaskState(TypedDict, total=False):
     goal: str
     questions: list[str]
     plan: dict[str, object]
-    candidates: list[dict[str, object]]
+    candidates: list[Candidate]
     selected_candidate_id: str
     order_id: str
 
