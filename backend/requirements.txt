@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+pydantic-settings
+httpx
+sqlalchemy>=2.0
+alembic
+asyncpg
+aiosqlite
+psycopg[binary,pool]
+langgraph
+langgraph-checkpoint-postgres
+langgraph-checkpoint-sqlite
+pytest
+pytest-asyncio
