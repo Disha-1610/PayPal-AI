@@ -1,0 +1,35 @@
+from app.domains.base import DomainPlugin, FieldSpec, ValueType
+from app.schemas.plan import PlanStep
+
+# Credentials and spend authority are granted through ``TaskAuthorization``, never extracted from chat.
+A2A = DomainPlugin(
+    name="a2a",
+    description="Negotiate a deal with another agent on the user's behalf.",
+    goal_question="What do you want to negotiate with the other agent?",
+    fields=(
+        FieldSpec(
+            name="price_ceiling",
+            value_type=ValueType.NUMBER,
+            description="Highest price the agent may agree to",
+            blocking=True,
+            question="What is the highest price I may agree to?",
+        ),
+        FieldSpec(
+            name="counterparty",
+            value_type=ValueType.TEXT,
+            description="The agent or service to negotiate with",
+            blocking=True,
+            question="Which agent or service should I negotiate with?",
+        ),
+        FieldSpec(name="deadline", value_type=ValueType.TEXT, description="When the deal must be concluded"),
+        FieldSpec(name="quantity", value_type=ValueType.NUMBER, description="Quantity or volume"),
+    ),
+    plan_steps=(
+        PlanStep(step_id="intent", description="Extract goal and constraints"),
+        PlanStep(step_id="handshake", description="Discover counterparty capabilities", depends_on=("intent",)),
+        PlanStep(step_id="negotiate", description="Negotiate within the price ceiling", depends_on=("handshake",)),
+        PlanStep(step_id="verify", description="Verify the agreed terms", depends_on=("negotiate",)),
+        PlanStep(step_id="approval", description="Ask the user to approve the deal", depends_on=("verify",)),
+        PlanStep(step_id="settle", description="Settle payment", depends_on=("approval",)),
+    ),
+)

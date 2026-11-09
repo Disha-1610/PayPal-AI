@@ -5,37 +5,12 @@ from pydantic import BaseModel
 
 from app.llm import gateway
 from app.llm.gateway import LLMGatewayError, call
-from app.llm.providers import LLMError, LLMResponse, LLMTransientError
+from app.llm.providers import LLMError, LLMTransientError
+from conftest import FakeProvider
 
 
 class Out(BaseModel):
     answer: int
-
-
-class FakeProvider:
-    name = "fake"
-    model = "fake-1"
-
-    def __init__(self, *steps):
-        self.steps = list(steps)
-        self.prompts: list[str] = []
-
-    async def generate(self, prompt, output_model):
-        self.prompts.append(prompt)
-        step = self.steps.pop(0)
-        if isinstance(step, Exception):
-            raise step
-        if callable(step):
-            return await step()
-        return LLMResponse(text=step, model=self.model, input_tokens=5, output_tokens=3)
-
-
-@pytest.fixture(autouse=True)
-def no_sleep(monkeypatch):
-    async def instant(_):
-        return None
-
-    monkeypatch.setattr(gateway.asyncio, "sleep", instant)
 
 
 async def test_returns_validated_model():

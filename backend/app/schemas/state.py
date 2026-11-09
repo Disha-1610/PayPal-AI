@@ -65,6 +65,8 @@ class TaskState(TypedDict, total=False):
 
     # --- single-owner fields (last write wins) ---
     status: str
+    goal: str
+    questions: list[str]
     plan: dict[str, object]
     candidates: list[dict[str, object]]
     selected_candidate_id: str

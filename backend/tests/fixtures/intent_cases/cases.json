@@ -1,0 +1,233 @@
+[
+  {
+    "id": "shop-multi-constraint",
+    "domain": "shopping", "kind": "extract",
+    "text": "I want running shoes under 5000 rupees, preferably Nike, delivered within 3 days",
+    "llm": {"goal": "running shoes", "constraints": [
+      {"field": "budget", "operator": "lt", "value": 5000, "strength": "hard", "evidence": "under 5000 rupees"},
+      {"field": "brand", "operator": "==", "value": "Nike", "strength": "soft", "evidence": "preferably Nike"},
+      {"field": "delivery_days", "operator": "lte", "value": 3, "strength": "hard", "evidence": "delivered within 3 days"}]},
+    "expect": {"status": "ready", "missing": [], "conflicts": false, "constraints": [
+      {"field": "budget", "operator": "lt", "value": 5000, "strength": "hard"},
+      {"field": "brand", "operator": "==", "value": "Nike", "strength": "soft"},
+      {"field": "delivery_days", "operator": "lte", "value": 3, "strength": "hard"}]}
+  },
+  {
+    "id": "shop-no-constraints-still-ready",
+    "domain": "shopping", "kind": "extract",
+    "text": "Find me a backpack",
+    "llm": {"goal": "backpack", "constraints": []},
+    "expect": {"status": "ready", "missing": [], "conflicts": false, "constraints": []}
+  },
+  {
+    "id": "shop-hard-soft-mix",
+    "domain": "shopping", "kind": "extract",
+    "text": "Need a black jacket, size M, ideally under 3000",
+    "llm": {"goal": "jacket", "constraints": [
+      {"field": "color", "operator": "==", "value": "black", "strength": "hard", "evidence": "black jacket"},
+      {"field": "size", "operator": "==", "value": "M", "strength": "hard", "evidence": "size M"},
+      {"field": "budget", "operator": "lt", "value": 3000, "strength": "soft", "evidence": "ideally under 3000"}]},
+    "expect": {"status": "ready", "missing": [], "conflicts": false, "constraints": [
+      {"field": "color", "operator": "==", "value": "black", "strength": "hard"},
+      {"field": "size", "operator": "==", "value": "M", "strength": "hard"},
+      {"field": "budget", "operator": "lt", "value": 3000, "strength": "soft"}]}
+  },
+  {
+    "id": "shop-exclusion-list",
+    "domain": "shopping", "kind": "extract",
+    "text": "Show me shoes, any brand except Puma or Reebok, max 4000",
+    "llm": {"goal": "shoes", "constraints": [
+      {"field": "brand", "operator": "not_in", "value": ["Puma", "Reebok"], "strength": "hard", "evidence": "except Puma or Reebok"},
+      {"field": "budget", "operator": "lte", "value": 4000, "strength": "hard", "evidence": "max 4000"}]},
+    "expect": {"status": "ready", "missing": [], "conflicts": false, "constraints": [
+      {"field": "brand", "operator": "not_in", "value": ["Puma", "Reebok"], "strength": "hard"},
+      {"field": "budget", "operator": "lte", "value": 4000, "strength": "hard"}]}
+  },
+  {
+    "id": "shop-contradictory-limits",
+    "domain": "shopping", "kind": "extract",
+    "text": "Laptop under 20000 but it must cost more than 50000",
+    "llm": {"goal": "laptop", "constraints": [
+      {"field": "budget", "operator": "lt", "value": 20000, "strength": "hard", "evidence": "under 20000"},
+      {"field": "budget", "operator": "gt", "value": 50000, "strength": "hard", "evidence": "more than 50000"}]},
+    "expect": {"status": "blocked", "missing": [], "conflicts": true, "constraints": [
+      {"field": "budget", "operator": "lt", "value": 20000, "strength": "hard"},
+      {"field": "budget", "operator": "gt", "value": 50000, "strength": "hard"}]}
+  },
+  {
+    "id": "shop-contradictory-feasibility",
+    "domain": "shopping", "kind": "extract",
+    "text": "I need a phone delivered within 1 day for under 100 rupees",
+    "llm": {"goal": "phone", "conflicts": ["a phone delivered within 1 day for under 100 rupees is not realistic"], "constraints": [
+      {"field": "delivery_days", "operator": "lte", "value": 1, "strength": "hard", "evidence": "within 1 day"},
+      {"field": "budget", "operator": "lt", "value": 100, "strength": "hard", "evidence": "under 100 rupees"}]},
+    "expect": {"status": "blocked", "missing": [], "conflicts": true, "constraints": [
+      {"field": "delivery_days", "operator": "lte", "value": 1, "strength": "hard"},
+      {"field": "budget", "operator": "lt", "value": 100, "strength": "hard"}]}
+  },
+  {
+    "id": "shop-out-of-scope",
+    "domain": "shopping", "kind": "extract",
+    "text": "What is the weather in Mumbai tomorrow?",
+    "llm": {"goal": "", "out_of_scope": true, "constraints": []},
+    "expect": {"status": "out_of_scope", "missing": [], "conflicts": false, "constraints": []}
+  },
+  {
+    "id": "shop-constraint-without-goal",
+    "domain": "shopping", "kind": "extract",
+    "text": "under 5000 please",
+    "llm": {"goal": "", "constraints": [
+      {"field": "budget", "operator": "lt", "value": 5000, "strength": "hard", "evidence": "under 5000"}]},
+    "expect": {"status": "blocked", "missing": ["goal"], "conflicts": false, "constraints": [
+      {"field": "budget", "operator": "lt", "value": 5000, "strength": "hard"}]}
+  },
+  {
+    "id": "contractor-complete",
+    "domain": "contractor", "kind": "extract",
+    "text": "Hire a mason for 2 weeks, budget at most 50000, NDA required",
+    "llm": {"goal": "hire a mason", "constraints": [
+      {"field": "duration", "operator": "==", "value": "2 weeks", "strength": "hard", "evidence": "for 2 weeks"},
+      {"field": "budget", "operator": "lte", "value": 50000, "strength": "hard", "evidence": "budget at most 50000"},
+      {"field": "compliance_terms", "operator": "==", "value": "NDA required", "strength": "hard", "evidence": "NDA required"}]},
+    "expect": {"status": "ready", "missing": [], "conflicts": false, "constraints": [
+      {"field": "duration", "operator": "==", "value": "*", "strength": "hard"},
+      {"field": "budget", "operator": "lte", "value": 50000, "strength": "hard"},
+      {"field": "compliance_terms", "operator": "==", "value": "*", "strength": "hard"}]}
+  },
+  {
+    "id": "contractor-missing-budget",
+    "domain": "contractor", "kind": "extract",
+    "text": "Hire a plumber, NDA required",
+    "llm": {"goal": "hire a plumber", "constraints": [
+      {"field": "compliance_terms", "operator": "==", "value": "NDA required", "strength": "hard", "evidence": "NDA required"}]},
+    "expect": {"status": "blocked", "missing": ["budget"], "conflicts": false, "constraints": [
+      {"field": "compliance_terms", "operator": "==", "value": "*", "strength": "hard"}]}
+  },
+  {
+    "id": "contractor-missing-budget-and-compliance",
+    "domain": "contractor", "kind": "extract",
+    "text": "Hire a Python developer",
+    "llm": {"goal": "hire a Python developer", "constraints": []},
+    "expect": {"status": "blocked", "missing": ["budget", "compliance_terms"], "conflicts": false, "constraints": []}
+  },
+  {
+    "id": "contractor-contradictory-budget",
+    "domain": "contractor", "kind": "extract",
+    "text": "Hire a designer with budget at least 80000 and at most 30000",
+    "llm": {"goal": "hire a designer", "constraints": [
+      {"field": "budget", "operator": "gte", "value": 80000, "strength": "hard", "evidence": "at least 80000"},
+      {"field": "budget", "operator": "lte", "value": 30000, "strength": "hard", "evidence": "at most 30000"}]},
+    "expect": {"status": "blocked", "missing": ["compliance_terms"], "conflicts": true, "constraints": [
+      {"field": "budget", "operator": "gte", "value": 80000, "strength": "hard"},
+      {"field": "budget", "operator": "lte", "value": 30000, "strength": "hard"}]}
+  },
+  {
+    "id": "a2a-complete",
+    "domain": "a2a", "kind": "extract",
+    "text": "Negotiate with SupplierBot for 500 units, price ceiling 90000",
+    "llm": {"goal": "negotiate a bulk order", "constraints": [
+      {"field": "counterparty", "operator": "==", "value": "SupplierBot", "strength": "hard", "evidence": "with SupplierBot"},
+      {"field": "quantity", "operator": "==", "value": 500, "strength": "hard", "evidence": "500 units"},
+      {"field": "price_ceiling", "operator": "lte", "value": 90000, "strength": "hard", "evidence": "price ceiling 90000"}]},
+    "expect": {"status": "ready", "missing": [], "conflicts": false, "constraints": [
+      {"field": "counterparty", "operator": "==", "value": "SupplierBot", "strength": "hard"},
+      {"field": "quantity", "operator": "==", "value": 500, "strength": "hard"},
+      {"field": "price_ceiling", "operator": "lte", "value": 90000, "strength": "hard"}]}
+  },
+  {
+    "id": "a2a-missing-price-ceiling",
+    "domain": "a2a", "kind": "extract",
+    "text": "Negotiate with SupplierBot for 500 units",
+    "llm": {"goal": "negotiate a bulk order", "constraints": [
+      {"field": "counterparty", "operator": "==", "value": "SupplierBot", "strength": "hard", "evidence": "with SupplierBot"},
+      {"field": "quantity", "operator": "==", "value": 500, "strength": "hard", "evidence": "500 units"}]},
+    "expect": {"status": "blocked", "missing": ["price_ceiling"], "conflicts": false, "constraints": [
+      {"field": "counterparty", "operator": "==", "value": "SupplierBot", "strength": "hard"},
+      {"field": "quantity", "operator": "==", "value": 500, "strength": "hard"}]}
+  },
+  {
+    "id": "patch-update-budget",
+    "domain": "shopping", "kind": "patch",
+    "goal": "running shoes",
+    "current": [{"field": "budget", "operator": "lt", "value": 5000, "strength": "hard"}],
+    "text": "Actually make the budget 5500",
+    "llm": {"ops": [{"op": "update", "field": "budget", "value": 5500, "evidence": "make the budget 5500"}]},
+    "expect": {"status": "ready", "missing": [], "conflicts": false,
+      "changes": [{"op": "update", "field": "budget", "old": 5000, "new": 5500}],
+      "constraints": [{"field": "budget", "operator": "lt", "value": 5500, "strength": "hard"}]}
+  },
+  {
+    "id": "patch-update-two-fields",
+    "domain": "contractor", "kind": "patch",
+    "goal": "hire a Python developer",
+    "current": [
+      {"field": "budget", "operator": "lte", "value": 50000, "strength": "hard"},
+      {"field": "duration", "operator": "==", "value": "2 weeks", "strength": "hard"},
+      {"field": "compliance_terms", "operator": "==", "value": "NDA required", "strength": "hard"}],
+    "text": "Make it 3 weeks and raise the budget to 70000",
+    "llm": {"ops": [
+      {"op": "update", "field": "duration", "value": "3 weeks", "evidence": "Make it 3 weeks"},
+      {"op": "update", "field": "budget", "value": 70000, "evidence": "raise the budget to 70000"}]},
+    "expect": {"status": "ready", "missing": [], "conflicts": false,
+      "changes": [
+        {"op": "update", "field": "duration", "old": "2 weeks", "new": "3 weeks"},
+        {"op": "update", "field": "budget", "old": 50000, "new": 70000}],
+      "constraints": [
+        {"field": "budget", "operator": "lte", "value": 70000, "strength": "hard"},
+        {"field": "duration", "operator": "==", "value": "3 weeks", "strength": "hard"},
+        {"field": "compliance_terms", "operator": "==", "value": "NDA required", "strength": "hard"}]}
+  },
+  {
+    "id": "patch-remove-and-add",
+    "domain": "shopping", "kind": "patch",
+    "goal": "running shoes",
+    "current": [
+      {"field": "budget", "operator": "lt", "value": 5000, "strength": "hard"},
+      {"field": "brand", "operator": "==", "value": "Nike", "strength": "soft"}],
+    "text": "Drop the brand preference and I need it in 2 days",
+    "llm": {"ops": [
+      {"op": "remove", "field": "brand", "evidence": "Drop the brand preference"},
+      {"op": "add", "field": "delivery_days", "operator": "lte", "value": 2, "strength": "hard", "evidence": "I need it in 2 days"}]},
+    "expect": {"status": "ready", "missing": [], "conflicts": false,
+      "changes": [
+        {"op": "remove", "field": "brand", "old": "Nike", "new": null},
+        {"op": "add", "field": "delivery_days", "old": null, "new": 2}],
+      "constraints": [
+        {"field": "budget", "operator": "lt", "value": 5000, "strength": "hard"},
+        {"field": "delivery_days", "operator": "lte", "value": 2, "strength": "hard"}]}
+  },
+  {
+    "id": "patch-no-change",
+    "domain": "shopping", "kind": "patch",
+    "goal": "running shoes",
+    "current": [{"field": "budget", "operator": "lt", "value": 5000, "strength": "hard"}],
+    "text": "Thanks, that looks good",
+    "llm": {"ops": []},
+    "expect": {"status": "ready", "missing": [], "conflicts": false, "changes": [],
+      "constraints": [{"field": "budget", "operator": "lt", "value": 5000, "strength": "hard"}]}
+  },
+  {
+    "id": "patch-strength-only",
+    "domain": "shopping", "kind": "patch",
+    "goal": "running shoes",
+    "current": [{"field": "brand", "operator": "==", "value": "Nike", "strength": "hard"}],
+    "text": "Nike is just a preference, not required",
+    "llm": {"ops": [{"op": "update", "field": "brand", "strength": "soft", "evidence": "just a preference"}]},
+    "expect": {"status": "ready", "missing": [], "conflicts": false,
+      "changes": [{"op": "update", "field": "brand", "old": "Nike", "new": "Nike"}],
+      "constraints": [{"field": "brand", "operator": "==", "value": "Nike", "strength": "soft"}]}
+  },
+  {
+    "id": "patch-introduces-contradiction",
+    "domain": "shopping", "kind": "patch",
+    "goal": "laptop",
+    "current": [{"field": "budget", "operator": "lt", "value": 5000, "strength": "hard"}],
+    "text": "It must also cost more than 8000",
+    "llm": {"ops": [{"op": "add", "field": "budget", "operator": "gt", "value": 8000, "strength": "hard", "evidence": "cost more than 8000"}]},
+    "expect": {"status": "blocked", "missing": [], "conflicts": true,
+      "changes": [{"op": "add", "field": "budget", "old": null, "new": 8000}],
+      "constraints": [
+        {"field": "budget", "operator": "lt", "value": 5000, "strength": "hard"},
+        {"field": "budget", "operator": "gt", "value": 8000, "strength": "hard"}]}
+  }
+]
