@@ -36,6 +36,11 @@ class DomainPlugin(BaseModel):
     goal_question: str = Field(description="Asked when no goal could be extracted")
     fields: tuple[FieldSpec, ...]
     plan_steps: tuple[PlanStep, ...]
+    source_fields: tuple[str, ...] = Field(
+        default=(),
+        description="Fields that lock WHERE results may come from (vendor, platform, method). "
+        "A hard constraint on one of them forbids cross-domain expansion in Phase 4.",
+    )
 
     def field(self, name: str) -> FieldSpec | None:
         return next((f for f in self.fields if f.name == name), None)

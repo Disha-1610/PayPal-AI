@@ -53,6 +53,11 @@ def _norm(value: object) -> Comparable:
     raise Unverifiable(f"unsupported value type {type(value).__name__}")
 
 
+def normalize(value: object) -> Comparable:
+    """Public form of the comparison normaliser, for callers that must match values the way ``satisfies`` does."""
+    return _norm(value)
+
+
 def satisfies(constraint: Constraint, actual: object) -> bool:
     op, target = constraint.operator, constraint.target_value
     if op in RANGE_OPERATORS:

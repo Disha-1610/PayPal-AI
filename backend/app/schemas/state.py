@@ -11,9 +11,11 @@ Nodes read the state and return a *partial* update. Rules enforced here:
 from operator import add
 from typing import Annotated, TypedDict
 
+from app.orchestrator.guard.constraint_guard import assert_revision_allowed
+from app.schemas.adapt import AdaptProgress, RelaxationProposal
 from app.schemas.authorization import Approval, TaskAuthorization
 from app.schemas.candidate import Candidate
-from app.schemas.constraints import Constraint, ConstraintDiff, ConstraintSource, diff_constraints
+from app.schemas.constraints import Constraint, ConstraintDiff, diff_constraints
 
 STATE_VERSION = 1
 
@@ -43,10 +45,7 @@ def merge_constraints(old: list[Constraint] | None, new: list[Constraint] | None
             )
         if incoming.history[:-1] != existing.history:
             raise ValueError(f"constraint {incoming.constraint_id}: revision history was not preserved")
-        if existing.source is ConstraintSource.USER and incoming.source is ConstraintSource.INFERRED:
-            raise ValueError(
-                f"constraint {incoming.constraint_id}: inferred revision cannot override a user constraint"
-            )
+        assert_revision_allowed(existing, incoming)
         merged[incoming.constraint_id] = incoming
     return list(merged.values())
 
@@ -70,6 +69,8 @@ class TaskState(TypedDict, total=False):
     questions: list[str]
     plan: dict[str, object]
     candidates: list[Candidate]
+    adapt: AdaptProgress
+    relaxation_proposals: list[RelaxationProposal]
     selected_candidate_id: str
     order_id: str
 
