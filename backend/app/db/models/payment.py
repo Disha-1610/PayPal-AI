@@ -22,6 +22,7 @@ class PaymentStatus(StrEnum):
     AUTHORIZED = "authorized"
     CAPTURED = "captured"
     VOIDED = "voided"
+    REFUNDED = "refunded"
     FAILED = "failed"
 
 
@@ -29,7 +30,8 @@ class PaymentStatus(StrEnum):
 ALLOWED_TRANSITIONS: dict[PaymentStatus, frozenset[PaymentStatus]] = {
     PaymentStatus.CREATED: frozenset({PaymentStatus.AUTHORIZED, PaymentStatus.FAILED, PaymentStatus.VOIDED}),
     PaymentStatus.AUTHORIZED: frozenset({PaymentStatus.CAPTURED, PaymentStatus.VOIDED, PaymentStatus.FAILED}),
-    PaymentStatus.CAPTURED: frozenset(),
+    PaymentStatus.CAPTURED: frozenset({PaymentStatus.REFUNDED}),
+    PaymentStatus.REFUNDED: frozenset(),
     PaymentStatus.VOIDED: frozenset(),
     PaymentStatus.FAILED: frozenset(),
 }

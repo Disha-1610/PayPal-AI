@@ -1,4 +1,5 @@
-from app.domains.base import DomainPlugin, FieldSpec, ValueType
+from app.domains.base import DomainPlugin, EventRule, FieldSpec, MonitorSpec, ValueType
+from app.schemas.monitor import Problem
 from app.schemas.plan import PlanStep
 
 CONTRACTOR = DomainPlugin(
@@ -33,5 +34,16 @@ CONTRACTOR = DomainPlugin(
         PlanStep(step_id="verify", description="Verify credentials and compliance", depends_on=("negotiate",)),
         PlanStep(step_id="approval", description="Ask the user to approve the engagement", depends_on=("verify",)),
         PlanStep(step_id="engage", description="Create the engagement and fund escrow", depends_on=("approval",)),
+    ),
+    # No deadline field exists for this domain, so only an explicit overdue report raises deadline risk.
+    monitor=MonitorSpec(
+        rules=(
+            EventRule(event_type="MILESTONE_STARTED", rank=10),
+            EventRule(event_type="MILESTONE_SUBMITTED", rank=20),
+            EventRule(event_type="MILESTONE_OVERDUE", rank=20, problem=Problem.DEADLINE_RISK),
+            EventRule(event_type="MILESTONE_REJECTED", rank=30, problem=Problem.WORK_REJECTED),
+            EventRule(event_type="MILESTONE_VERIFIED", rank=40),
+        ),
+        completed_event_types=frozenset({"MILESTONE_VERIFIED"}),
     ),
 )

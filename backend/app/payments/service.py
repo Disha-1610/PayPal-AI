@@ -61,6 +61,7 @@ _ORDER_CREATED = "order_created"
 _AUTHORIZED = "authorized"
 _CAPTURED = "captured"
 _VOIDED = "voided"
+_REFUNDED = "refunded"
 _REAUTHORIZED = "reauthorized"
 _LAPSED = "authorization_lapsed"
 
@@ -75,6 +76,10 @@ class PaymentServiceError(Exception):
 
 class PaymentNotAuthorized(PaymentServiceError):
     """The permit does not allow this action (not permitted, over limit, or no verified approval)."""
+
+    def __init__(self, message: str, *, requires_approval: bool = False) -> None:
+        super().__init__(message)
+        self.requires_approval = requires_approval
 
 
 class PaymentMismatch(PaymentServiceError):
@@ -249,6 +254,30 @@ class PaymentService:
         )
         return payment
 
+    async def refund(self, session: AsyncSession, payment_id: UUID, *, permit: PaymentPermit, reason: str) -> Payment:
+        """Refund a captured payment in full. Gated by ``EXECUTE_REFUND``; the idempotency key makes a retry safe.
+
+        Partial refunds are not supported: the ledger has no partially-refunded state.
+        """
+        payment = await self._load(session, payment_id, permit)
+        if payment.status == PaymentStatus.REFUNDED.value:
+            return payment  # replay after a lost response: already applied
+        if payment.status != PaymentStatus.CAPTURED.value:
+            raise PaymentServiceError(f"cannot refund a payment in status {payment.status}")
+        self._authorize_action(permit, Action.EXECUTE_REFUND, payment.amount, payment.currency)
+        capture = await self._event(session, payment.id, _CAPTURED)
+        capture_id = _required(capture.provider_ref if capture else None, "no provider capture recorded")
+        refund = await self._provider.refund(
+            request_id=f"{payment.id}:refund", capture_id=capture_id, amount=payment.amount, currency=payment.currency
+        )
+        if refund.status != "completed":
+            raise PaymentNotReady(f"refund is {refund.status}; ledger left CAPTURED")
+        await self._record(
+            session, payment, event_type=_REFUNDED, from_status=PaymentStatus.CAPTURED, to_status=PaymentStatus.REFUNDED,
+            request_id=f"{payment.id}:refund", provider_ref=refund.refund_id, payload={"reason": reason},
+        )
+        return payment
+
     # ---- internals ----------------------------------------------------------------------------
 
     def _authorize_action(self, permit: PaymentPermit, action: Action, amount: Decimal, currency: str) -> None:
@@ -257,7 +286,9 @@ class PaymentService:
             approvals=list(permit.approvals), approval_verifier=permit.verifier,
         )
         if not decision.allowed:
-            raise PaymentNotAuthorized(f"{action.value} denied: {decision.reason}")
+            raise PaymentNotAuthorized(
+                f"{action.value} denied: {decision.reason}", requires_approval=decision.requires_approval
+            )
 
     async def _provider_status(self, authorization_id: str, original: ProviderError) -> str:
         """After a failed capture/void, read the authorization's real status from PayPal.
