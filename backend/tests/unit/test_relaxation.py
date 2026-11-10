@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.orchestrator.agents.adapt.diagnosis import diagnose, summarize
+from app.orchestrator.agents.evaluation.diagnosis import diagnose, summarize
 from app.orchestrator.agents.adapt.relaxation import ProposalError, apply_proposal, propose_relaxations
 from app.schemas.adapt import AdaptPolicy, RelaxationOp, UserDecision, UserDecisionKind
 from app.schemas.candidate import Candidate, DataQuality

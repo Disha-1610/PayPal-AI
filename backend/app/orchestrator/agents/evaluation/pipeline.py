@@ -24,13 +24,20 @@ from app.schemas.evaluation import (
 )
 
 
-class EvaluationReport(BaseModel):
+class PipelineResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     filtered: FilterTrace  # ids only: the report never carries candidate free text
     assessments: tuple[CredibilityAssessment, ...]
     ranking: RankingResult
     outcome: EvaluationOutcome
+
+
+def ensure_unique_ids(candidates: Sequence[Candidate]) -> None:
+    ids = [c.candidate_id for c in candidates]
+    duplicates = sorted({i for i in ids if ids.count(i) > 1})
+    if duplicates:
+        raise ValueError(f"duplicate candidate ids in pool: {duplicates}")
 
 
 def evaluate(
@@ -43,23 +50,19 @@ def evaluate(
     credibility_policy: CredibilityPolicy | None = None,
     outcome_policy: OutcomePolicy | None = None,
     audit: AuditScope | None = None,
-) -> EvaluationReport:
-    ids = [c.candidate_id for c in candidates]
-    duplicates = sorted({i for i in ids if ids.count(i) > 1})
-    if duplicates:
-        raise ValueError(f"duplicate candidate ids in pool: {duplicates}")
-
+) -> PipelineResult:
+    ensure_unique_ids(candidates)
     filtered = hard_filter(candidates, constraints)
     assessments = assess_credibility(candidates, now=now, policy=credibility_policy)
     ranking = rank_candidates(filtered.survivors, assessments, constraints, weights)
     outcome = classify_outcome(filtered, assessments, ranking, attempt=attempt, policy=outcome_policy)
-    report = EvaluationReport(filtered=filtered.trace(), assessments=assessments, ranking=ranking, outcome=outcome)
+    report = PipelineResult(filtered=filtered.trace(), assessments=assessments, ranking=ranking, outcome=outcome)
     if audit:
         _audit(audit, report, attempt)
     return report
 
 
-def _audit(audit: AuditScope, report: EvaluationReport, attempt: int) -> None:
+def _audit(audit: AuditScope, report: PipelineResult, attempt: int) -> None:
     """Ids, codes and scores only: the trace never carries candidate free text."""
     for r in report.filtered.rejections:
         audit.emit(

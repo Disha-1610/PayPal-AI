@@ -12,7 +12,7 @@ from langgraph.types import interrupt
 from app.audit.events import AuditScope, Phase
 from app.domains.base import DomainPlugin
 from app.llm.providers import LLMProvider
-from app.orchestrator.agents.adapt.diagnosis import diagnose, summarize
+from app.orchestrator.agents.evaluation.diagnosis import diagnose, summarize
 from app.orchestrator.agents.adapt.recovery import plan_adaptation, terminate
 from app.orchestrator.agents.adapt.relaxation import apply_proposal
 from app.orchestrator.agents.intent.agent import patch_intent, to_state_update

@@ -17,7 +17,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 
-from app.orchestrator.agents.adapt.diagnosis import Violation, diagnose
+from app.orchestrator.agents.evaluation.diagnosis import Violation, diagnose
 from app.orchestrator.agents.evaluation.constraint_eval import normalize, to_decimal
 from app.schemas.adapt import (
     AdaptPolicy,

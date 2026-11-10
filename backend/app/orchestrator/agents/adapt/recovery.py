@@ -15,7 +15,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from app.orchestrator.agents.adapt.diagnosis import diagnose, hard_constraints, summarize
+from app.orchestrator.agents.evaluation.diagnosis import diagnose, hard_constraints, summarize
 from app.orchestrator.agents.adapt.relaxation import propose_relaxations
 from app.orchestrator.progress.hashing import progress_hash
 from app.schemas.adapt import (

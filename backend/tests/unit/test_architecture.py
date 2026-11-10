@@ -36,6 +36,7 @@ def test_candidate_state_model_holds_no_free_text():
 AGENTS = ORCHESTRATOR / "agents"
 LEGACY_AGENT_IMPORTS = {
     ("adapt", "evaluation"),  # pure constraint-evaluation helpers, shared by diagnosis and relaxation
+    ("evaluator", "evaluation"),  # the Evaluator layers the LLM on the deterministic pipeline, which stays LLM-free
     ("adapt", "intent"),  # resolve_decision calls patch_intent directly: a real agent-to-agent call
 }
 _AGENT_IMPORT = re.compile(r"^\s*(?:from|import)\s+app\.orchestrator\.agents\.(\w+)", re.MULTILINE)
