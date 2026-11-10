@@ -357,3 +357,85 @@ async def test_void_timeout_while_hold_still_active_is_not_recorded(factory):
         async with factory() as s, s.begin():
             await service.void(s, pid, permit=no_approvals, reason="x")
     assert await status(factory, pid) == "authorized"
+
+
+# ---- honor period / authorization window --------------------------------------------------------
+
+
+def aged(service: PaymentService, days: int) -> PaymentService:
+    from datetime import datetime, timezone
+
+    return PaymentService(service._provider, clock=lambda: datetime.now(timezone.utc) + timedelta(days=days))
+
+
+async def test_capture_inside_the_honor_period_does_not_reauthorize(factory):
+    provider = FakeProvider()
+    service, pid = await authorized_payment(factory, provider)
+    async with factory() as s, s.begin():
+        await aged(service, 2).capture(s, pid, permit=FULL)
+    assert "reauthorize" not in [c[0] for c in provider.calls]
+
+
+async def test_capture_after_the_honor_period_reauthorizes_and_captures_on_the_new_id(factory):
+    provider = FakeProvider()
+    service, pid = await authorized_payment(factory, provider)
+    async with factory() as s, s.begin():
+        await aged(service, 4).capture(s, pid, permit=FULL)
+    assert await status(factory, pid) == "captured"
+    assert [c[0] for c in provider.calls].count("reauthorize") == 1
+    async with factory() as s:
+        events = (await s.execute(select(PaymentEvent).where(PaymentEvent.event_type == "reauthorized"))).scalars().all()
+    assert len(events) == 1 and events[0].payload["previous_authorization_id"] == "auth-1"
+
+
+async def test_reauthorization_needs_a_verified_authorize_approval(factory):
+    provider = FakeProvider()
+    service, pid = await authorized_payment(factory, provider)
+    capture_only, _ = permit(Action.CAPTURE_PAYMENT)
+    with pytest.raises(PaymentNotAuthorized):
+        async with factory() as s, s.begin():
+            await aged(service, 4).capture(s, pid, permit=capture_only)
+    assert await status(factory, pid) == "authorized"
+    assert "reauthorize" not in [c[0] for c in provider.calls]
+
+
+async def test_past_the_29_day_window_the_payment_fails_without_touching_paypal(factory):
+    provider = FakeProvider()
+    service, pid = await authorized_payment(factory, provider)
+    async with factory() as s, s.begin():
+        result = await aged(service, 30).capture(s, pid, permit=FULL)
+    assert result.status == "failed" and await status(factory, pid) == "failed"
+    assert not [c for c in provider.calls if c[0] in ("capture", "reauthorize")]
+    async with factory() as s, s.begin():  # voiding a lapsed hold is a no-op, not an error
+        await service.void(s, pid, permit=FULL, reason="expired")
+
+
+async def test_expired_hold_at_paypal_fails_the_payment(factory):
+    provider = FakeProvider()
+    service, pid = await authorized_payment(factory, provider)
+    provider.auth_status = "expired"
+    async with factory() as s, s.begin():
+        await aged(service, 4).capture(s, pid, permit=FULL)
+    assert await status(factory, pid) == "failed"
+    assert "reauthorize" not in [c[0] for c in provider.calls]
+
+
+async def test_capture_timeout_when_paypal_says_the_hold_expired_fails_the_payment(factory):
+    provider = FakeProvider()
+    service, pid = await authorized_payment(factory, provider)
+    provider.fail_next = ProviderError("timeout", uncertain=True)
+    provider.auth_status = "expired"
+    async with factory() as s, s.begin():
+        await service.capture(s, pid, permit=FULL)
+    assert await status(factory, pid) == "failed"
+
+
+async def test_void_timeout_when_the_hold_already_expired_counts_as_released(factory):
+    no_approvals, _ = permit()
+    provider = FakeProvider()
+    service, pid = await authorized_payment(factory, provider)
+    provider.fail_next = ProviderError("timeout", uncertain=True)
+    provider.auth_status = "expired"
+    async with factory() as s, s.begin():
+        await service.void(s, pid, permit=no_approvals, reason="verification failed")
+    assert await status(factory, pid) == "voided"

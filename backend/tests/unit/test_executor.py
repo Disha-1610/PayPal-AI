@@ -249,3 +249,18 @@ async def test_every_executor_decision_is_audited(factory, world):
 
 def test_provider_order_type_still_exported():
     assert ProviderOrder.model_fields["payee_id"]
+
+
+async def test_lapsed_hold_expires_the_run_instead_of_capturing(factory, world):
+    placed = await place(factory, world)
+    pid = placed.created.payment.id
+    world["provider"].order_status = "payer_approved"
+    world["source"].evidence = Evidence(source="shop", observed=observed(), confirmed=None)
+    await settle(factory, world, pid, attempt=1)  # authorizes; evidence still pending
+    world["source"].evidence = Evidence(source="shop", observed=observed(total_minor=510000), confirmed=True)
+    late = PaymentService(world["provider"], clock=lambda: datetime.now(UTC) + timedelta(days=30))
+    executor = Executor(late, world["observer"], world["source"], VerificationSpec(max_attempts=3))
+    async with factory() as s, s.begin():
+        result = await executor.settle(s, pid, permit=world["permit"], terms=TERMS, order_id="o1", attempt=2)
+    assert result.state is ExecutionState.EXPIRED and result.captured is None
+    assert await ledger(factory, pid) == "failed"

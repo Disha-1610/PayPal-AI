@@ -17,6 +17,10 @@ Guarantees:
   * The provider's order is compared with the ledger before authorizing (amount, currency, payee;
     a missing payee fails closed).
   * Capture never exceeds the authorized amount.
+  * Time limits: a hold is honored ~3 days (``HONOR_PERIOD``); capture then re-authorizes (new
+    authorization id, same amount, same approval gate). Past 29 days (``AUTHORIZATION_WINDOW``), or if
+    PayPal reports the hold expired/voided, the payment is marked FAILED (``authorization_lapsed``)
+    and capture returns it without calling PayPal; the run must re-source.
   * If a provider call succeeds but the response is lost or the DB commit fails, the ledger lags the
     provider. Capture and void re-read the authorization from PayPal on any provider error and record
     the outcome if it was already applied; authorize re-reads the order first. Create and authorize
@@ -26,7 +30,9 @@ Guarantees:
 LLM agents never import this module.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import NamedTuple
 from uuid import UUID
@@ -37,6 +43,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit.service import AuditEvent, record_critical
 from app.core.logging import get_logger
+from app.db.base import utcnow
 from app.db.models.payment import Payment, PaymentEvent, PaymentStatus, can_transition
 from app.payments.provider import PaymentProvider, ProviderError, ProviderOrder
 from app.schemas.approval_terms import to_minor_units
@@ -54,6 +61,12 @@ _ORDER_CREATED = "order_created"
 _AUTHORIZED = "authorized"
 _CAPTURED = "captured"
 _VOIDED = "voided"
+_REAUTHORIZED = "reauthorized"
+_LAPSED = "authorization_lapsed"
+
+# PayPal: a hold is honored for ~3 days; it can be re-authorized (new authorization id) until day 29.
+HONOR_PERIOD = timedelta(days=3)
+AUTHORIZATION_WINDOW = timedelta(days=29)
 
 
 class PaymentServiceError(Exception):
@@ -88,8 +101,9 @@ class CreatedPayment(NamedTuple):
 
 
 class PaymentService:
-    def __init__(self, provider: PaymentProvider) -> None:
+    def __init__(self, provider: PaymentProvider, clock: Callable[[], datetime] = utcnow) -> None:
         self._provider = provider
+        self._clock = clock
 
     # ---- create -------------------------------------------------------------------------------
 
@@ -178,7 +192,10 @@ class PaymentService:
         if amount <= 0 or amount > payment.amount:
             raise PaymentServiceError("capture amount must be positive and within the authorized amount")
         self._authorize_action(permit, Action.CAPTURE_PAYMENT, amount, payment.currency)
-        authorization_id = await self._authorization_id(session, payment.id)
+        live_id = await self._live_authorization_id(session, payment, permit)
+        if live_id is None:
+            return payment  # the hold lapsed: ledger is FAILED and the caller must re-source
+        authorization_id = live_id
         capture_id: str | None = None
         recovered = False
         try:
@@ -187,9 +204,13 @@ class PaymentService:
                 currency=payment.currency, final_capture=True,
             )
         except ProviderError as exc:
-            # The capture may have been applied even though we saw an error: read PayPal before giving up.
-            if not await self._settled_at_provider(authorization_id, {"captured", "partially_captured"}, exc):
-                raise
+            # The capture may have been applied even though we saw an error: read PayPal before deciding.
+            provider_status = await self._provider_status(authorization_id, exc)
+            if provider_status in {"voided", "expired"}:
+                await self._lapse(session, payment, provider_status)
+                return payment
+            if provider_status not in {"captured", "partially_captured"}:
+                raise  # still holdable and uncaptured: nothing was applied, the caller may retry (same key)
             recovered = True
         else:
             if capture.status != "completed":
@@ -210,13 +231,15 @@ class PaymentService:
         """Release an unsettled payment. Before authorization nothing is held, so only the ledger changes."""
         payment = await self._load(session, payment_id, permit)
         status = PaymentStatus(payment.status)
+        if status is PaymentStatus.FAILED and await self._event(session, payment.id, _LAPSED):
+            return payment  # the provider already released the hold; nothing left to void
         if status is PaymentStatus.AUTHORIZED:
             authorization_id = await self._authorization_id(session, payment.id)
             try:
                 await self._provider.void(request_id=f"{payment.id}:void", authorization_id=authorization_id)
             except ProviderError as exc:
                 # A lost response or a replayed void: if PayPal already released the hold, the goal is met.
-                if not await self._settled_at_provider(authorization_id, {"voided"}, exc):
+                if await self._provider_status(authorization_id, exc) not in {"voided", "expired"}:
                     raise
         elif status is not PaymentStatus.CREATED:
             raise PaymentServiceError(f"cannot void a payment in status {status.value}")
@@ -236,8 +259,8 @@ class PaymentService:
         if not decision.allowed:
             raise PaymentNotAuthorized(f"{action.value} denied: {decision.reason}")
 
-    async def _settled_at_provider(self, authorization_id: str, wanted: set[str], original: ProviderError) -> bool:
-        """After a failed capture/void, ask PayPal whether the authorization already reached ``wanted``.
+    async def _provider_status(self, authorization_id: str, original: ProviderError) -> str:
+        """After a failed capture/void, read the authorization's real status from PayPal.
 
         A timeout is not a failure, so the provider is the source of truth. If this read also fails, the
         original error is re-raised (still uncertain, ledger untouched, safe to retry later).
@@ -250,7 +273,63 @@ class PaymentService:
             "payment reconciled after provider error",
             extra={"authorization_id": authorization_id, "provider_status": authorization.status},
         )
-        return authorization.status in wanted
+        return authorization.status
+
+    async def _live_authorization_id(self, session: AsyncSession, payment: Payment, permit: PaymentPermit) -> str | None:
+        """The authorization id to capture against, re-authorizing once the honor period has passed.
+
+        Returns None (after recording the lapse) when the 29-day window is over or PayPal no longer holds
+        the funds; the caller then abandons this payment instead of capturing.
+        """
+        events = await self._authorization_events(session, payment.id)
+        if not events:
+            raise PaymentServiceError("no provider authorization recorded")
+        first, latest = events[0], events[-1]
+        authorization_id = _required(latest.provider_ref, "no provider authorization recorded")
+        now = self._clock()
+        if now - _aware(first.created_at) >= AUTHORIZATION_WINDOW:
+            await self._lapse(session, payment, "authorization window elapsed")
+            return None
+        if now - _aware(latest.created_at) < HONOR_PERIOD:
+            return authorization_id
+        current = await self._provider.get_authorization(authorization_id)
+        if current.status in {"voided", "expired"}:
+            await self._lapse(session, payment, current.status)
+            return None
+        renewals = sum(event.event_type == _REAUTHORIZED for event in events)
+        return await self._reauthorize(session, payment, permit, authorization_id, renewals)
+
+    async def _reauthorize(
+        self, session: AsyncSession, payment: Payment, permit: PaymentPermit, authorization_id: str, renewals: int
+    ) -> str:
+        """Re-hold the same amount (new authorization id). Same key on retry, so it is applied once."""
+        self._authorize_action(permit, Action.AUTHORIZE_PAYMENT, payment.amount, payment.currency)
+        request_id = f"{payment.id}:reauth:{renewals + 1}"
+        renewed = await self._provider.reauthorize(
+            request_id=request_id, authorization_id=authorization_id, amount=payment.amount, currency=payment.currency
+        )
+        if (renewed.amount, renewed.currency) != (payment.amount, payment.currency):
+            raise PaymentMismatch("re-authorized amount differs from the approved amount")
+        await self._record(
+            session, payment, event_type=_REAUTHORIZED, from_status=PaymentStatus.AUTHORIZED, to_status=PaymentStatus.AUTHORIZED,
+            request_id=request_id, provider_ref=renewed.authorization_id, payload={"previous_authorization_id": authorization_id},
+        )
+        return renewed.authorization_id
+
+    async def _lapse(self, session: AsyncSession, payment: Payment, reason: str) -> None:
+        """The hold is gone (expired/voided at PayPal): fail the payment so the run can re-source."""
+        await self._record(
+            session, payment, event_type=_LAPSED, from_status=PaymentStatus.AUTHORIZED, to_status=PaymentStatus.FAILED,
+            request_id=f"{payment.id}:lapse", payload={"reason": reason},
+        )
+
+    async def _authorization_events(self, session: AsyncSession, payment_id: UUID) -> list[PaymentEvent]:
+        stmt = (
+            select(PaymentEvent)
+            .where(PaymentEvent.payment_id == payment_id, PaymentEvent.event_type.in_((_AUTHORIZED, _REAUTHORIZED)))
+            .order_by(PaymentEvent.created_at.asc())
+        )
+        return list((await session.execute(stmt)).scalars())
 
     async def _load(
         self, session: AsyncSession, payment_id: UUID, permit: PaymentPermit, expected: PaymentStatus | None = None
@@ -293,8 +372,8 @@ class PaymentService:
         return (await session.execute(stmt)).scalars().first()
 
     async def _authorization_id(self, session: AsyncSession, payment_id: UUID) -> str:
-        event = await self._event(session, payment_id, _AUTHORIZED)
-        return _required(event.provider_ref if event else None, "no provider authorization recorded")
+        events = await self._authorization_events(session, payment_id)
+        return _required(events[-1].provider_ref if events else None, "no provider authorization recorded")
 
     async def _record(
         self,
@@ -308,7 +387,7 @@ class PaymentService:
         provider_ref: str | None = None,
         payload: dict[str, object] | None = None,
     ) -> None:
-        if from_status is not None and not can_transition(from_status, to_status):
+        if from_status is not None and from_status is not to_status and not can_transition(from_status, to_status):
             raise PaymentServiceError(f"illegal transition {from_status.value} -> {to_status.value}")
         payment.status = to_status.value
         session.add(
@@ -332,6 +411,11 @@ def _required[T](value: T | None, message: str = "missing value") -> T:
     if value is None:
         raise PaymentServiceError(message)
     return value
+
+
+def _aware(moment: datetime) -> datetime:
+    """SQLite returns naive datetimes; the ledger stores UTC."""
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
 def _check_order(order: ProviderOrder, *, amount: Decimal, currency: str, payee_id: str) -> None:

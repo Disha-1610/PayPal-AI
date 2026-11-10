@@ -112,6 +112,25 @@ class PayPalClient:
             data,
         )
 
+    async def reauthorize(
+        self, *, request_id: str, authorization_id: str, amount: Decimal, currency: str
+    ) -> ProviderAuthorization:
+        """Extend a hold past its honor period. PayPal issues a new authorization id."""
+        body = {"amount": {"currency_code": currency, "value": format_amount(amount, currency)}}
+        data = await self._request(
+            "POST", f"/v2/payments/authorizations/{authorization_id}/reauthorize", request_id=request_id, json=body,
+            headers=_FULL_BODY,
+        )
+        return _parse(
+            lambda d: ProviderAuthorization(
+                authorization_id=d["id"],
+                status=_AUTH_STATUS.get(d.get("status", ""), "other"),
+                amount=Decimal(d["amount"]["value"]) if "amount" in d else amount,
+                currency=d["amount"]["currency_code"] if "amount" in d else currency,
+            ),
+            data,
+        )
+
     async def void(self, *, request_id: str, authorization_id: str) -> None:
         await self._request("POST", f"/v2/payments/authorizations/{authorization_id}/void", request_id=request_id)
 

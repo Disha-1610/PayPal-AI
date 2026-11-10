@@ -65,4 +65,8 @@ class PaymentProvider(Protocol):
         self, *, request_id: str, authorization_id: str, amount: Decimal, currency: str, final_capture: bool
     ) -> ProviderCapture: ...
 
+    async def reauthorize(
+        self, *, request_id: str, authorization_id: str, amount: Decimal, currency: str
+    ) -> ProviderAuthorization: ...  # returns the NEW authorization (new id)
+
     async def void(self, *, request_id: str, authorization_id: str) -> None: ...

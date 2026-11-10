@@ -131,3 +131,13 @@ async def test_capture_reports_the_amount_paypal_returned():
     )
     capture = await paypal.capture(request_id="k", authorization_id="A", amount=Decimal(5000), currency="INR", final_capture=True)
     assert capture.amount == Decimal("4999.00")
+
+
+async def test_reauthorize_posts_amount_with_idempotency_key_and_returns_the_new_id():
+    paypal, seen = client(lambda r: httpx.Response(201, json={"id": "AUTH-2", "status": "CREATED"}))
+    renewed = await paypal.reauthorize(request_id="k5", authorization_id="AUTH-1", amount=Decimal(5200), currency="INR")
+    request = seen[-1]
+    assert request.url.path == "/v2/payments/authorizations/AUTH-1/reauthorize"
+    assert request.headers["PayPal-Request-Id"] == "k5"
+    assert json.loads(request.content) == {"amount": {"currency_code": "INR", "value": "5200.00"}}
+    assert (renewed.authorization_id, renewed.status, renewed.amount) == ("AUTH-2", "created", Decimal(5200))

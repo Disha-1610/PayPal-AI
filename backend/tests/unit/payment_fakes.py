@@ -66,5 +66,13 @@ class FakeProvider:
             lambda: ProviderCapture(capture_id="cap-1", status=self.capture_status, amount=amount, currency=currency),
         )
 
+    async def reauthorize(self, *, request_id, authorization_id, amount, currency):
+        return self._once(
+            "reauthorize", request_id,
+            lambda: ProviderAuthorization(
+                authorization_id=f"auth-re-{len(self.seen)}", status="created", amount=amount, currency=currency
+            ),
+        )
+
     async def void(self, *, request_id, authorization_id):
         self._once("void", request_id, lambda: None)

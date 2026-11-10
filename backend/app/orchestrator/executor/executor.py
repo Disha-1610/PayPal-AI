@@ -172,7 +172,9 @@ class Executor:
         # than was authorized; the remainder of the hold is released by the final capture.
         verified = from_minor_units(_known(evidence.observed.total_minor), terms.currency)
         amount = min(verified, payment.amount)
-        await self._payments.capture(session, payment_id, permit=permit, amount=amount)
+        captured = await self._payments.capture(session, payment_id, permit=permit, amount=amount)
+        if captured.status == "failed":  # the hold lapsed (honor/29-day window): nothing was captured
+            return Settlement(ExecutionState.EXPIRED, verification=result)
         return Settlement(ExecutionState.SETTLED, verification=result, captured=amount)
 
 
