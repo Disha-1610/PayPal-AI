@@ -297,3 +297,63 @@ async def test_authorize_is_idempotent_once_authorized(factory):
         again = await service.authorize(s, pid, permit=FULL)
     assert again.status == "authorized"
     assert [c[0] for c in provider.calls].count("authorize") == 1
+
+
+async def test_capture_timeout_after_provider_applied_it_is_recovered_from_paypal(factory):
+    provider = FakeProvider()
+    service, pid = await authorized_payment(factory, provider)
+    provider.fail_next = ProviderError("timeout", uncertain=True)
+    provider.auth_status = "captured"  # PayPal applied the capture; only the response was lost
+    async with factory() as s, s.begin():
+        await service.capture(s, pid, permit=FULL)
+    assert await status(factory, pid) == "captured"
+    async with factory() as s:
+        event = (await s.execute(select(PaymentEvent).where(PaymentEvent.event_type == "captured"))).scalar_one()
+    assert event.payload["recovered_from_provider"] is True
+
+
+async def test_capture_timeout_not_applied_leaves_ledger_authorized_and_is_retryable(factory):
+    provider = FakeProvider()
+    service, pid = await authorized_payment(factory, provider)
+    provider.fail_next = ProviderError("timeout", uncertain=True)
+    with pytest.raises(ProviderError):
+        async with factory() as s, s.begin():
+            await service.capture(s, pid, permit=FULL)
+    assert await status(factory, pid) == "authorized"
+    async with factory() as s, s.begin():
+        await service.capture(s, pid, permit=FULL)
+    assert await status(factory, pid) == "captured"
+
+
+async def test_capture_timeout_with_unreadable_provider_state_stays_uncertain(factory):
+    provider = FakeProvider()
+    service, pid = await authorized_payment(factory, provider)
+    provider.fail_next = ProviderError("timeout", uncertain=True)
+    provider.get_authorization_fails = True
+    with pytest.raises(ProviderError) as info:
+        async with factory() as s, s.begin():
+            await service.capture(s, pid, permit=FULL)
+    assert info.value.uncertain
+    assert await status(factory, pid) == "authorized"
+
+
+async def test_void_timeout_after_provider_released_the_hold_is_recovered(factory):
+    no_approvals, _ = permit()
+    provider = FakeProvider()
+    service, pid = await authorized_payment(factory, provider)
+    provider.fail_next = ProviderError("timeout", uncertain=True)
+    provider.auth_status = "voided"
+    async with factory() as s, s.begin():
+        await service.void(s, pid, permit=no_approvals, reason="verification failed")
+    assert await status(factory, pid) == "voided"
+
+
+async def test_void_timeout_while_hold_still_active_is_not_recorded(factory):
+    no_approvals, _ = permit()
+    provider = FakeProvider()
+    service, pid = await authorized_payment(factory, provider)
+    provider.fail_next = ProviderError("timeout", uncertain=True)
+    with pytest.raises(ProviderError):
+        async with factory() as s, s.begin():
+            await service.void(s, pid, permit=no_approvals, reason="x")
+    assert await status(factory, pid) == "authorized"

@@ -17,9 +17,11 @@ Guarantees:
   * The provider's order is compared with the ledger before authorizing (amount, currency, payee;
     a missing payee fails closed).
   * Capture never exceeds the authorized amount.
-  * If a provider call succeeds but the DB commit fails, the ledger lags the provider. The
-    reconciliation worker (``payment_reconciliations``) repairs this; the idempotency key makes the
-    retry safe.
+  * If a provider call succeeds but the response is lost or the DB commit fails, the ledger lags the
+    provider. Capture and void re-read the authorization from PayPal on any provider error and record
+    the outcome if it was already applied; authorize re-reads the order first. Create and authorize
+    retries replay the same idempotency key. A background reconciliation worker for crashes that
+    leave no error to react to (``payment_reconciliations``) is still to be wired.
 
 LLM agents never import this module.
 """
@@ -177,18 +179,29 @@ class PaymentService:
             raise PaymentServiceError("capture amount must be positive and within the authorized amount")
         self._authorize_action(permit, Action.CAPTURE_PAYMENT, amount, payment.currency)
         authorization_id = await self._authorization_id(session, payment.id)
-        capture = await self._provider.capture(
-            request_id=f"{payment.id}:capture", authorization_id=authorization_id, amount=amount,
-            currency=payment.currency, final_capture=True,
-        )
-        if capture.status != "completed":
-            raise PaymentNotReady(f"capture is {capture.status}; ledger left AUTHORIZED")
+        capture_id: str | None = None
+        recovered = False
+        try:
+            capture = await self._provider.capture(
+                request_id=f"{payment.id}:capture", authorization_id=authorization_id, amount=amount,
+                currency=payment.currency, final_capture=True,
+            )
+        except ProviderError as exc:
+            # The capture may have been applied even though we saw an error: read PayPal before giving up.
+            if not await self._settled_at_provider(authorization_id, {"captured", "partially_captured"}, exc):
+                raise
+            recovered = True
+        else:
+            if capture.status != "completed":
+                raise PaymentNotReady(f"capture is {capture.status}; ledger left AUTHORIZED")
+            capture_id = capture.capture_id
         await self._record(
             session, payment, event_type=_CAPTURED, from_status=PaymentStatus.AUTHORIZED, to_status=PaymentStatus.CAPTURED,
-            request_id=f"{payment.id}:capture", provider_ref=capture.capture_id,
+            request_id=f"{payment.id}:capture", provider_ref=capture_id,
             payload={
                 "captured_minor": to_minor_units(amount, payment.currency),
                 "authorized_minor": to_minor_units(payment.amount, payment.currency),
+                **({"recovered_from_provider": True} if recovered else {}),
             },
         )
         return payment
@@ -198,9 +211,13 @@ class PaymentService:
         payment = await self._load(session, payment_id, permit)
         status = PaymentStatus(payment.status)
         if status is PaymentStatus.AUTHORIZED:
-            await self._provider.void(
-                request_id=f"{payment.id}:void", authorization_id=await self._authorization_id(session, payment.id)
-            )
+            authorization_id = await self._authorization_id(session, payment.id)
+            try:
+                await self._provider.void(request_id=f"{payment.id}:void", authorization_id=authorization_id)
+            except ProviderError as exc:
+                # A lost response or a replayed void: if PayPal already released the hold, the goal is met.
+                if not await self._settled_at_provider(authorization_id, {"voided"}, exc):
+                    raise
         elif status is not PaymentStatus.CREATED:
             raise PaymentServiceError(f"cannot void a payment in status {status.value}")
         await self._record(
@@ -218,6 +235,22 @@ class PaymentService:
         )
         if not decision.allowed:
             raise PaymentNotAuthorized(f"{action.value} denied: {decision.reason}")
+
+    async def _settled_at_provider(self, authorization_id: str, wanted: set[str], original: ProviderError) -> bool:
+        """After a failed capture/void, ask PayPal whether the authorization already reached ``wanted``.
+
+        A timeout is not a failure, so the provider is the source of truth. If this read also fails, the
+        original error is re-raised (still uncertain, ledger untouched, safe to retry later).
+        """
+        try:
+            authorization = await self._provider.get_authorization(authorization_id)
+        except ProviderError:
+            raise original from None
+        logger.warning(
+            "payment reconciled after provider error",
+            extra={"authorization_id": authorization_id, "provider_status": authorization.status},
+        )
+        return authorization.status in wanted
 
     async def _load(
         self, session: AsyncSession, payment_id: UUID, permit: PaymentPermit, expected: PaymentStatus | None = None

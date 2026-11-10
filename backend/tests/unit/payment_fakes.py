@@ -22,6 +22,8 @@ class FakeProvider:
         self.omit_payee = False
         self.capture_status = "completed"
         self.fail_next: ProviderError | None = None
+        self.auth_status = "created"
+        self.get_authorization_fails = False
         self.amount = Decimal(0)
         self.currency = "INR"
         self.payee = "m1"
@@ -54,7 +56,9 @@ class FakeProvider:
         return self._once("authorize", request_id, lambda: self._order(authorized=True))
 
     async def get_authorization(self, authorization_id):
-        return ProviderAuthorization(authorization_id=authorization_id, status="created", amount=self.amount, currency=self.currency)
+        if self.get_authorization_fails:
+            raise ProviderError("timeout", uncertain=True)
+        return ProviderAuthorization(authorization_id=authorization_id, status=self.auth_status, amount=self.amount, currency=self.currency)
 
     async def capture(self, *, request_id, authorization_id, amount, currency, final_capture):
         return self._once(
