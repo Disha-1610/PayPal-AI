@@ -16,6 +16,7 @@ from app.schemas.adapt import AdaptProgress, RelaxationProposal
 from app.schemas.authorization import Approval, TaskAuthorization
 from app.schemas.candidate import Candidate
 from app.schemas.constraints import Constraint, ConstraintDiff, diff_constraints
+from app.schemas.discovery import DiscoveryProgress
 
 STATE_VERSION = 1
 
@@ -70,6 +71,7 @@ class TaskState(TypedDict, total=False):
     plan: dict[str, object]
     candidates: list[Candidate]
     adapt: AdaptProgress
+    discovery: DiscoveryProgress
     relaxation_proposals: list[RelaxationProposal]
     selected_candidate_id: str
     order_id: str
