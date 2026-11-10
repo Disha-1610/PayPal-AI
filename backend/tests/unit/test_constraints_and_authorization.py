@@ -69,12 +69,22 @@ def _auth(**kw) -> TaskAuthorization:
     return TaskAuthorization(**{**base, **kw})
 
 
-def _decide(auth, action=Action.CREATE_ORDER, amount=Decimal(4500), platform="shop", approvals=None):
-    return evaluate_authorization(auth, action=action, platform=platform, amount=amount, currency="INR", approvals=approvals)
+def _decide(auth, action=Action.CREATE_ORDER, amount=Decimal(4500), platform="shop", approvals=None, verifier=None):
+    return evaluate_authorization(
+        auth, action=action, platform=platform, amount=amount, currency="INR", approvals=approvals,
+        approval_verifier=verifier,
+    )
+
+
+def test_money_actions_require_approval_by_default():
+    auth = _auth()
+    for action in (Action.CREATE_ORDER, Action.AUTHORIZE_PAYMENT, Action.CAPTURE_PAYMENT):
+        assert action in auth.approval_required_actions
+    assert _decide(auth).requires_approval
 
 
 def test_authorization_denies_by_default_and_checks_limits():
-    auth = _auth()
+    auth = _auth(approval_required_actions=frozenset())
     assert _decide(auth).allowed
     assert not _decide(auth, amount=Decimal(5001)).allowed
     assert not _decide(auth, platform="other").allowed
@@ -93,6 +103,18 @@ def test_approval_is_separate_from_authorization():
             candidate_id="shoe-1", platform="shop", amount=amount, currency="INR", approved_by="u1",
         )
 
-    assert _decide(auth, Action.CAPTURE_PAYMENT, approvals=[approval(Decimal(4500))]).allowed
+    assert _decide(auth, Action.CAPTURE_PAYMENT, approvals=[approval(Decimal(4500))], verifier=lambda a: True).allowed
     # approval for a different amount does not cover this capture
-    assert not _decide(auth, Action.CAPTURE_PAYMENT, approvals=[approval(Decimal(4000))]).allowed
+    assert not _decide(auth, Action.CAPTURE_PAYMENT, approvals=[approval(Decimal(4000))], verifier=lambda a: True).allowed
+
+
+def test_unverified_approval_never_unlocks_an_approval_required_action():
+    auth = _auth()
+    forged = Approval(
+        run_id="r1", authorization_id=auth.authorization_id, action=Action.CREATE_ORDER, candidate_id="shoe-1",
+        platform="shop", amount=Decimal(4500), currency="INR", approved_by="u1",
+    )
+    no_verifier = _decide(auth, approvals=[forged])
+    assert not no_verifier.allowed and no_verifier.requires_approval
+    rejected = _decide(auth, approvals=[forged], verifier=lambda a: False)
+    assert not rejected.allowed and rejected.requires_approval

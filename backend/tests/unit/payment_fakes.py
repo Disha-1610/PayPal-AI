@@ -1,0 +1,66 @@
+"""In-memory PaymentProvider for tests. Honours idempotency keys the way PayPal does."""
+
+from decimal import Decimal
+
+from app.payments.provider import (
+    ProviderAuthorization,
+    ProviderCapture,
+    ProviderError,
+    ProviderOrder,
+)
+
+
+class FakeProvider:
+    """In-memory provider that honours idempotency keys like PayPal does."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str | None]] = []
+        self.seen: dict[str, object] = {}
+        self.order_status = "created"
+        self.order_amount: Decimal | None = None
+        self.order_payee: str | None = None
+        self.omit_payee = False
+        self.capture_status = "completed"
+        self.fail_next: ProviderError | None = None
+        self.amount = Decimal(0)
+        self.currency = "INR"
+        self.payee = "m1"
+
+    def _once(self, name: str, request_id: str, make):
+        self.calls.append((name, request_id))
+        if self.fail_next:
+            error, self.fail_next = self.fail_next, None
+            raise error
+        return self.seen.setdefault(f"{name}:{request_id}", make())
+
+    def _order(self, authorized: bool = False) -> ProviderOrder:
+        return ProviderOrder(
+            order_id="ord-1", status="authorized" if authorized else self.order_status,
+            amount=self.order_amount if self.order_amount is not None else self.amount, currency=self.currency,
+            payee_id=None if self.omit_payee else (self.order_payee or self.payee), approval_url="https://pay/approve",
+            authorization_id="auth-1" if authorized else None,
+        )
+
+    async def create_order(self, *, request_id, amount, currency, payee_id, reference):
+        self.amount, self.currency, self.payee = amount, currency, payee_id
+        return self._once("create", request_id, self._order)
+
+    async def get_order(self, order_id):
+        self.calls.append(("get_order", None))
+        return self._order(authorized=self.order_status == "authorized")
+
+    async def authorize_order(self, *, request_id, order_id):
+        self.order_status = "authorized"
+        return self._once("authorize", request_id, lambda: self._order(authorized=True))
+
+    async def get_authorization(self, authorization_id):
+        return ProviderAuthorization(authorization_id=authorization_id, status="created", amount=self.amount, currency=self.currency)
+
+    async def capture(self, *, request_id, authorization_id, amount, currency, final_capture):
+        return self._once(
+            "capture", request_id,
+            lambda: ProviderCapture(capture_id="cap-1", status=self.capture_status, amount=amount, currency=currency),
+        )
+
+    async def void(self, *, request_id, authorization_id):
+        self._once("void", request_id, lambda: None)

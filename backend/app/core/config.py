@@ -20,6 +20,15 @@ class Settings(BaseSettings):
     llm_api_key: SecretStr | None = None
     llm_timeout_seconds: float = 30.0
 
+    approval_signing_key: SecretStr | None = None  # HMAC key for user approvals; required to issue/verify
+    approval_key_id: str = "v1"  # recorded on each approval so the key can be rotated
+    approval_ttl_seconds: int = 600
+
+    paypal_client_id: str | None = None
+    paypal_client_secret: SecretStr | None = None
+    paypal_base_url: str = "https://api-m.sandbox.paypal.com"  # live: https://api-m.paypal.com
+    paypal_timeout_seconds: float = 15.0
+
     channel3_api_key: SecretStr | None = None
     channel3_base_url: str = "https://api.trychannel3.com"
     channel3_country: str | None = None  # e.g. "US"; Channel3 infers defaults when unset

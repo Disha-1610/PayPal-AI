@@ -9,6 +9,7 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.plan import Plan, PlanStep
+from app.schemas.verification import VerificationSpec
 
 
 class ValueType(StrEnum):
@@ -40,6 +41,10 @@ class DomainPlugin(BaseModel):
         default=(),
         description="Fields that lock WHERE results may come from (vendor, platform, method). "
         "A hard constraint on one of them forbids cross-domain expansion in Phase 4.",
+    )
+
+    verification: VerificationSpec = Field(
+        default_factory=VerificationSpec, description="How Phase 5 verifies delivery before settlement"
     )
 
     def field(self, name: str) -> FieldSpec | None:

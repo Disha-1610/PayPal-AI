@@ -5,10 +5,9 @@ Universal core + domain ``attributes`` validated against the domain plug-in's fi
 ``text_refs`` carries database ids only (untrusted-data boundary, rule 2.5).
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
-
 from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -23,7 +22,7 @@ class DataQuality(StrEnum):
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class Candidate(BaseModel):

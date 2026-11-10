@@ -46,8 +46,8 @@ def store():
     return MemoryTextStore()
 
 
-def make_registry(store, *connectors) -> ConnectorRegistry:
-    registry = ConnectorRegistry(store, timeout=1.0)
+def make_registry(store, *connectors, approval_verifier=None) -> ConnectorRegistry:
+    registry = ConnectorRegistry(store, timeout=1.0, approval_verifier=approval_verifier)
     for c in connectors or (build_mock_amazon(), build_mock_flipkart(), build_mock_contractor()):
         registry.register(c)
     return registry
@@ -119,12 +119,13 @@ async def test_checkout_needs_create_order_permission_and_budget(store):
     over = request.model_copy(update={"amount": Decimal("99999")})
     with pytest.raises(ConnectorError, match="max_spend"):
         await registry.checkout(make_auth({"mock_amazon"}), "mock_amazon", over, [])
-    done = await registry.checkout(make_auth({"mock_amazon"}), "mock_amazon", request, [])
+    no_approval = make_auth({"mock_amazon"}, approval_required_actions=frozenset())
+    done = await registry.checkout(no_approval, "mock_amazon", request, [])
     assert done.status == "created"
 
 
 async def test_checkout_honours_required_approval(store):
-    registry = make_registry(store)
+    registry = make_registry(store, approval_verifier=lambda approval: True)  # field matching only; signatures: test_approval_guard
     auth = make_auth({"mock_amazon"}, approval_required_actions=frozenset({Action.CREATE_ORDER}))
     request = CheckoutRequest(candidate_id="amz-1", amount=Decimal("4499"), currency="INR")
     with pytest.raises(ConnectorError, match="approval required"):

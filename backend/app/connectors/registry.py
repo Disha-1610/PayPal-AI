@@ -31,7 +31,7 @@ from app.connectors.base.models import (
     StockResponse,
 )
 from app.connectors.normalize import assess_quality, validate_attributes
-from app.schemas.authorization import Approval, TaskAuthorization, evaluate_authorization
+from app.schemas.authorization import Approval, ApprovalVerifier, TaskAuthorization, evaluate_authorization
 from app.schemas.candidate import Candidate
 
 logger = logging.getLogger(__name__)
@@ -72,11 +72,13 @@ class ConnectorRegistry:
         *,
         timeout: float = DEFAULT_TIMEOUT,
         max_age: timedelta = DEFAULT_MAX_AGE,
+        approval_verifier: ApprovalVerifier | None = None,
     ) -> None:
         self._connectors: dict[str, Connector] = {}
         self._text_store = text_store
         self._timeout = timeout
         self._max_age = max_age
+        self._approval_verifier = approval_verifier
 
     def register(self, connector: Connector) -> None:
         if connector.id in self._connectors:
@@ -117,6 +119,7 @@ class ConnectorRegistry:
             amount=amount,
             currency=currency or auth.currency,
             approvals=approvals,
+            approval_verifier=self._approval_verifier,
         )
         if not decision.allowed:
             raise ConnectorError(f"{capability.value} on {connector_id!r} denied: {decision.reason}")

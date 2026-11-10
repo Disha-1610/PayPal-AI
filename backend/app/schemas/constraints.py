@@ -4,7 +4,7 @@ Constraints are deliberately separate from authorization (what the agent is allo
 to do) and approval (what the user confirmed). See ``schemas.authorization``.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Self
@@ -42,7 +42,7 @@ class ConstraintStrength(StrEnum):
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _coerce_number(value: object) -> Decimal:

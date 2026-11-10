@@ -9,13 +9,12 @@
 """
 
 import asyncio
-import hashlib
-import json
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.hashing import stable_hash
 from app.core.logging import get_logger
 from app.db.models.audit import AuditLog
 from app.db.session import SessionFactory
@@ -42,8 +41,7 @@ class AuditEvent(BaseModel):
 
 def hash_input(payload: object) -> str:
     """Stable sha256 of a JSON-serialisable node input (raw input is not stored)."""
-    canonical = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode()).hexdigest()
+    return stable_hash(payload)
 
 
 def _to_row(event: AuditEvent) -> AuditLog:
