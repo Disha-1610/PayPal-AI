@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.audit.events import Phase
 from app.audit.service import AuditEvent, hash_input, record_critical
 from app.core.logging import get_logger
 from app.db.base import utcnow
@@ -118,7 +119,7 @@ class EventProcessor:
         await record_critical(
             session,
             AuditEvent(
-                run_id=event.run_id, node="monitor", actor_type="system", actor_id=event.source,
+                run_id=event.run_id, phase=Phase.MONITOR, node="monitor", actor_type="system", actor_id=event.source,
                 action="MONITOR_EVENT", resource_type=event.domain, resource_id=event.entity_id,
                 input_hash=hash_input(event.model_dump(mode="json")), decision=row.status, reason=row.reason,
                 metadata_json={"event_type": event.event_type, "problem": row.problem},

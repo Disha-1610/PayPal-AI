@@ -41,6 +41,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.audit.events import Phase
 from app.audit.service import AuditEvent, record_critical
 from app.core.logging import get_logger
 from app.db.base import utcnow
@@ -430,7 +431,7 @@ class PaymentService:
         await record_critical(
             session,
             AuditEvent(
-                run_id=payment.run_id, node="payment_service", actor_type="payment_service", action=f"PAYMENT_{event_type.upper()}",
+                run_id=payment.run_id, phase=Phase.EXECUTION, node="payment_service", actor_type="payment_service", action=f"PAYMENT_{event_type.upper()}",
                 resource_type="payment", resource_id=str(payment.id), decision="allow",
                 metadata_json={"status": to_status.value, "approval_id": payment.approval_id, "provider_ref": provider_ref},
             ),

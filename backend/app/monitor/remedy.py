@@ -12,6 +12,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.audit.events import Phase
 from app.audit.service import AuditEvent, record_critical
 from app.db.models.payment import Payment
 from app.payments.service import PaymentNotAuthorized, PaymentPermit, PaymentService
@@ -89,7 +90,7 @@ async def _audit(session: AsyncSession, payment: Payment | None, action: Action,
     await record_critical(
         session,
         AuditEvent(
-            run_id=payment.run_id, node="monitor", actor_type="system", action=f"REMEDY_{action.value.upper()}",
+            run_id=payment.run_id, phase=Phase.MONITOR, node="monitor", actor_type="system", action=f"REMEDY_{action.value.upper()}",
             resource_type="payment", resource_id=str(payment.id), decision=decision, reason=reason[:512],
         ),
     )

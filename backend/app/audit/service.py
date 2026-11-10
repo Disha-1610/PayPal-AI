@@ -26,6 +26,7 @@ class AuditEvent(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     run_id: str
+    phase: str | None = None
     node: str
     actor_type: str
     actor_id: str | None = None

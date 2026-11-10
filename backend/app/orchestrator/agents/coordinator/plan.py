@@ -3,10 +3,10 @@ edit is written to the audit log. There is no separate Planner agent.
 """
 
 from enum import StrEnum
-from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
+from app.audit.events import AuditScope, AuditSink, Phase
 from app.audit.service import AuditEvent, hash_input
 from app.domains.base import DomainPlugin
 from app.schemas.plan import Plan, PlanStep, StepStatus
@@ -39,13 +39,16 @@ class PlanEdit(BaseModel):
         return self
 
 
-class AuditSink(Protocol):
-    def enqueue(self, event: AuditEvent) -> None: ...
-
-
-def build_plan(plugin: DomainPlugin) -> dict[str, object]:
+def build_plan(plugin: DomainPlugin, *, audit: AuditScope | None = None) -> dict[str, object]:
     """Initial ``TaskState`` update: the plug-in's plan template."""
-    return {"plan": plugin.plan_template().model_dump(mode="json")}
+    plan = plugin.plan_template()
+    if audit:
+        audit.emit(Phase.DOMAIN, "DOMAIN_LOADED", node="coordinator", decision="allow", resource_type="domain", resource_id=plugin.name)
+        audit.emit(
+            Phase.PLAN, "PLAN_CREATED", node="coordinator", decision="allow", payload=plan.model_dump(mode="json"),
+            metadata={"domain": plugin.name, "steps": [s.step_id for s in plan.steps]},
+        )
+    return {"plan": plan.model_dump(mode="json")}
 
 
 def replan(
@@ -78,6 +81,7 @@ def replan(
     audit.enqueue(
         AuditEvent(
             run_id=run_id,
+            phase=Phase.PLAN,
             node="coordinator",
             actor_type="agent",
             action="PLAN_REVISED",

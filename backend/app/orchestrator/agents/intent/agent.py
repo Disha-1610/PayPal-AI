@@ -10,6 +10,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel
 
+from app.audit.events import AuditScope, Phase
 from app.core.logging import get_logger
 from app.domains.base import DomainPlugin, FieldSpec, ValueType
 from app.llm.gateway import call
@@ -289,8 +290,16 @@ def _field_lines(plugin: DomainPlugin) -> str:
     return "\n".join(f"- {f.name} ({f.value_type.value}): {f.description}" for f in plugin.fields)
 
 
+def _audit_questions(audit: AuditScope, result: IntentResult) -> None:
+    if result.questions:
+        audit.emit(
+            Phase.INTENT, "USER_CLARIFICATION_REQUESTED", node="intent", decision=result.status.value,
+            metadata={"missing": list(result.missing), "conflicts": list(result.conflicts)},
+        )
+
+
 async def extract_intent(
-    text: str, plugin: DomainPlugin, *, provider: LLMProvider | None = None
+    text: str, plugin: DomainPlugin, *, provider: LLMProvider | None = None, audit: AuditScope | None = None
 ) -> tuple[IntentResult, ConstraintDiff]:
     """Full extraction for a user's first message."""
     prompt = render(
@@ -312,6 +321,12 @@ async def extract_intent(
         )
 
     result = await _call_checked(prompt, IntentExtraction, check, provider)
+    if audit:
+        audit.emit(
+            Phase.INTENT, "INTENT_EXTRACTED", node="intent", actor_type="agent", payload=text, decision=result.status.value,
+            metadata={"domain": plugin.name, "fields": sorted(c.field_name for c in result.constraints), "missing": list(result.missing)},
+        )
+        _audit_questions(audit, result)
     return result, diff_constraints([], list(result.constraints))
 
 
@@ -322,6 +337,7 @@ async def patch_intent(
     plugin: DomainPlugin,
     *,
     provider: LLMProvider | None = None,
+    audit: AuditScope | None = None,
 ) -> tuple[IntentResult, ConstraintDiff, list[AppliedChange]]:
     """Patch mode: turn a user update into operations, applied deterministically to ``current``."""
     lines = [
@@ -343,6 +359,12 @@ async def patch_intent(
 
     updated, changes = await _call_checked(prompt, IntentPatch, check, provider)
     result = evaluate(plugin, goal, updated)
+    if audit:
+        audit.emit(
+            Phase.INTENT, "CONSTRAINT_UPDATED", node="intent", actor_type="user", payload=text, decision=result.status.value,
+            metadata={"changes": [{"op": c.op.value, "field": c.field} for c in changes]},
+        )
+        _audit_questions(audit, result)
     return result, diff_constraints(current, updated), changes
 
 

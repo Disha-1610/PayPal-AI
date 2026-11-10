@@ -16,6 +16,7 @@ from statistics import fmean
 
 from pydantic import BaseModel, ConfigDict
 
+from app.audit.events import AuditScope, Phase
 from app.connectors.base import Capability, Connector, ConnectorError, TextRecord, TextStore
 from app.connectors.base.models import (
     CandidateRequest,
@@ -57,6 +58,8 @@ class DiscoveryResult(BaseModel):
 
     candidates: tuple[Candidate, ...] = ()
     errors: tuple[str, ...] = ()
+    failed_sources: tuple[str, ...] = ()  # connectors whose search call still failed after the last attempt
+    attempts: int = 1
 
 
 def _expect[T: BaseModel](response: BaseModel, expected: type[T], connector_id: str) -> T:
@@ -154,29 +157,100 @@ class ConnectorRegistry:
 
     # --- typed capabilities (text-free outputs) -------------------------------------------
 
-    async def search_all(self, auth: TaskAuthorization, request: SearchRequest) -> DiscoveryResult:
-        """Search every permitted connector for the domain. A failure never widens the scope."""
-        connectors = [c for c in self.scoped(auth, request.domain) if any(s.name == "search" for s in c.capabilities)]
+    def _searchable(self, auth: TaskAuthorization, request: SearchRequest) -> list[Connector]:
+        return [c for c in self.scoped(auth, request.domain) if any(s.name == "search" for s in c.capabilities)]
+
+    async def search_all(
+        self, auth: TaskAuthorization, request: SearchRequest, *, audit: AuditScope | None = None
+    ) -> DiscoveryResult:
+        """Search every permitted connector for the domain once. A failure never widens the scope."""
+        candidates, errors, failed = await self._search_once(auth, request, self._searchable(auth, request), audit, attempt=1)
+        return DiscoveryResult(
+            candidates=tuple(candidates), errors=tuple(e for found in errors.values() for e in found),
+            failed_sources=tuple(sorted(failed)),
+        )
+
+    async def search_resilient(
+        self, auth: TaskAuthorization, request: SearchRequest, *, max_attempts: int = 3, audit: AuditScope | None = None
+    ) -> DiscoveryResult:
+        """``search_all`` with bounded retries of only the connectors whose call failed.
+
+        Candidates from connectors that already answered are kept (a later attempt replaces a candidate
+        with the same source and id, never drops one). An empty answer is a valid answer, not a failure:
+        deciding what to do about "nothing found" belongs to the Adapt ladder. Retries never leave the
+        permitted platforms; when ``max_attempts`` is spent the still-failing sources are reported.
+        """
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1")
+        pending = self._searchable(auth, request)
+        pool: dict[tuple[str, str], Candidate] = {}
+        errors: dict[str, list[str]] = {}
+        attempts = 0
+        while pending and attempts < max_attempts:
+            attempts += 1
+            found, new_errors, failed = await self._search_once(auth, request, pending, audit, attempt=attempts)
+            pool.update({(c.source, c.candidate_id): c for c in found})
+            errors.update({connector.id: new_errors.get(connector.id, []) for connector in pending})
+            pending = [c for c in pending if c.id in failed]
+        if pending and audit:
+            audit.emit(
+                Phase.DISCOVERY, "SEARCH_ATTEMPTS_EXHAUSTED", node="discovery", decision="deny",
+                reason=f"still failing after {attempts} attempts", metadata={"failed_sources": sorted(c.id for c in pending)},
+            )
+        return DiscoveryResult(
+            candidates=tuple(pool.values()), errors=tuple(e for found in errors.values() for e in found),
+            failed_sources=tuple(sorted(c.id for c in pending)), attempts=attempts,
+        )
+
+    async def _search_once(
+        self, auth: TaskAuthorization, request: SearchRequest, connectors: list[Connector], audit: AuditScope | None, attempt: int
+    ) -> tuple[list[Candidate], dict[str, list[str]], set[str]]:
+        """One pass over ``connectors``: (candidates, errors by connector id, connectors whose call failed)."""
+        if audit:
+            audit.emit(
+                Phase.DISCOVERY, "SEARCH_STARTED", node="discovery", payload=request.model_dump(mode="json"),
+                metadata={"connectors": [c.id for c in connectors], "attempt": attempt},
+            )
         outcomes = await asyncio.gather(
             *(self._call(auth, c.id, Capability.SEARCH, request) for c in connectors), return_exceptions=True
         )
         candidates: list[Candidate] = []
-        errors: list[str] = []
+        errors: dict[str, list[str]] = {}
+        failed: set[str] = set()
+
+        def fail(connector_id: str, message: str, *, call_failed: bool) -> None:
+            errors.setdefault(connector_id, []).append(message)
+            if call_failed:
+                failed.add(connector_id)
+            if audit:
+                audit.emit(
+                    Phase.DISCOVERY, "CONNECTOR_FAILURE", node="discovery", resource_type="connector", resource_id=connector_id,
+                    decision="error", reason=message, metadata={"attempt": attempt},
+                )
+
         for connector, outcome in zip(connectors, outcomes, strict=True):
             if isinstance(outcome, BaseException):
-                errors.append(str(outcome) if isinstance(outcome, ConnectorError) else f"{connector.id}: {outcome!r}")
+                message = str(outcome) if isinstance(outcome, ConnectorError) else f"{connector.id}: {outcome!r}"
+                fail(connector.id, message, call_failed=True)
                 continue
             try:
                 response = _expect(outcome, SearchResponse, connector.id)
             except ConnectorError as exc:
-                errors.append(str(exc))
+                fail(connector.id, str(exc), call_failed=True)
                 continue
+            received = 0
             for listing in response.listings:
                 try:
                     candidates.append(await self._ingest(auth.run_id, connector.id, listing))
+                    received += 1
                 except ConnectorError as exc:
-                    errors.append(str(exc))
-        return DiscoveryResult(candidates=tuple(candidates), errors=tuple(errors))
+                    fail(connector.id, str(exc), call_failed=False)  # one bad listing does not fail the connector
+            if audit:
+                audit.emit(
+                    Phase.DISCOVERY, "SEARCH_RESULTS_RECEIVED", node="discovery", resource_type="connector",
+                    resource_id=connector.id, decision="ok", metadata={"candidates": received, "returned": len(response.listings)},
+                )
+        return candidates, errors, failed
 
     async def details(self, auth: TaskAuthorization, connector_id: str, request: CandidateRequest) -> Candidate:
         response = _expect(await self._call(auth, connector_id, Capability.DETAILS, request), Listing, connector_id)
