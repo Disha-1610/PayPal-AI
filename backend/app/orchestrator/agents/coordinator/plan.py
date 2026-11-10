@@ -12,7 +12,7 @@ from app.domains.base import DomainPlugin
 from app.schemas.plan import Plan, PlanStep, StepStatus
 
 # Fields this node may write into TaskState (checked with ``validate_state_update``).
-COORDINATOR_WRITABLE = frozenset({"plan"})
+COORDINATOR_WRITABLE = frozenset({"plan", "coordinator"})
 
 
 class EditOp(StrEnum):
