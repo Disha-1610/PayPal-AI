@@ -1,4 +1,5 @@
-from app.domains.base import DomainPlugin, FieldSpec, ValueType
+from app.domains.base import DomainPlugin, EventRule, FieldSpec, MonitorSpec, ValueType
+from app.schemas.monitor import Problem
 from app.schemas.plan import PlanStep
 
 # Credentials and spend authority are granted through ``TaskAuthorization``, never extracted from chat.
@@ -31,5 +32,21 @@ A2A = DomainPlugin(
         PlanStep(step_id="verify", description="Verify the agreed terms", depends_on=("negotiate",)),
         PlanStep(step_id="approval", description="Ask the user to approve the deal", depends_on=("verify",)),
         PlanStep(step_id="settle", description="Settle payment", depends_on=("approval",)),
+    ),
+    monitor=MonitorSpec(
+        rules=(
+            EventRule(event_type="TASK_ACCEPTED", rank=10),
+            EventRule(event_type="PROGRESS_UPDATED", rank=20),
+            EventRule(
+                event_type="ETA_UPDATED", rank=20, problem=Problem.DEADLINE_RISK,
+                deadline_field="deadline", date_key="new_eta",
+            ),
+            EventRule(event_type="DEADLINE_PASSED", rank=20, problem=Problem.DEADLINE_RISK),
+            EventRule(event_type="TASK_FAILED", rank=30, problem=Problem.WORK_REJECTED),
+            EventRule(event_type="RESULT_SUBMITTED", rank=30),
+            EventRule(event_type="RESULT_ACCEPTED", rank=40),
+        ),
+        completed_event_types=frozenset({"RESULT_ACCEPTED"}),
+        deadline_field="deadline",
     ),
 )

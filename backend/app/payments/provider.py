@@ -50,6 +50,15 @@ class ProviderCapture(BaseModel):
     currency: str
 
 
+class ProviderRefund(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    refund_id: str
+    status: str  # normalised: completed | pending | failed | other
+    amount: Decimal
+    currency: str
+
+
 class PaymentProvider(Protocol):
     async def create_order(
         self, *, request_id: str, amount: Decimal, currency: str, payee_id: str, reference: str
@@ -70,3 +79,7 @@ class PaymentProvider(Protocol):
     ) -> ProviderAuthorization: ...  # returns the NEW authorization (new id)
 
     async def void(self, *, request_id: str, authorization_id: str) -> None: ...
+
+    async def refund(
+        self, *, request_id: str, capture_id: str, amount: Decimal, currency: str
+    ) -> ProviderRefund: ...

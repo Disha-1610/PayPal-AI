@@ -20,6 +20,7 @@ from app.payments.provider import (
     ProviderCapture,
     ProviderError,
     ProviderOrder,
+    ProviderRefund,
 )
 from app.schemas.approval_terms import minor_exponent
 
@@ -31,6 +32,7 @@ _AUTH_STATUS = {
     "VOIDED": "voided", "EXPIRED": "expired",
 }
 _CAPTURE_STATUS = {"COMPLETED": "completed", "PENDING": "pending", "DECLINED": "declined"}
+_REFUND_STATUS = {"COMPLETED": "completed", "PENDING": "pending", "FAILED": "failed", "CANCELLED": "failed"}
 _TOKEN_SKEW_SECONDS = 60
 # PayPal returns a minimal body (id, status, links) by default; we need amount/payee/authorizations.
 _FULL_BODY = {"Prefer": "return=representation"}
@@ -45,6 +47,7 @@ class PayPalClient:
     def __init__(self, settings: Settings, http: httpx.AsyncClient | None = None) -> None:
         if not settings.paypal_client_id or settings.paypal_client_secret is None:
             raise ProviderError("PayPal credentials are not configured")
+        self._webhook_id = settings.paypal_webhook_id
         self._client_id = settings.paypal_client_id
         self._secret = settings.paypal_client_secret
         self._http = http or httpx.AsyncClient(base_url=settings.paypal_base_url, timeout=settings.paypal_timeout_seconds)
@@ -133,6 +136,45 @@ class PayPalClient:
 
     async def void(self, *, request_id: str, authorization_id: str) -> None:
         await self._request("POST", f"/v2/payments/authorizations/{authorization_id}/void", request_id=request_id)
+
+    async def refund(
+        self, *, request_id: str, capture_id: str, amount: Decimal, currency: str
+    ) -> ProviderRefund:
+        body = {"amount": {"currency_code": currency, "value": format_amount(amount, currency)}}
+        data = await self._request(
+            "POST", f"/v2/payments/captures/{capture_id}/refund", request_id=request_id, json=body, headers=_FULL_BODY
+        )
+        return _parse(
+            lambda d: ProviderRefund(
+                refund_id=d["id"],
+                status=_REFUND_STATUS.get(d.get("status", ""), "other"),
+                amount=Decimal(d["amount"]["value"]) if "amount" in d else amount,
+                currency=d["amount"]["currency_code"] if "amount" in d else currency,
+            ),
+            data,
+        )
+
+    # ---- webhooks -----------------------------------------------------------------------------
+
+    async def verify_webhook(self, *, headers: dict[str, str], event: dict[str, Any]) -> bool:
+        """Ask PayPal to verify a webhook's signature. A missing header or non-SUCCESS answer is False."""
+        if not self._webhook_id:
+            raise ProviderError("PAYPAL_WEBHOOK_ID is not configured")
+        lowered = {k.lower(): v for k, v in headers.items()}
+        try:
+            body = {
+                "auth_algo": lowered["paypal-auth-algo"],
+                "cert_url": lowered["paypal-cert-url"],
+                "transmission_id": lowered["paypal-transmission-id"],
+                "transmission_sig": lowered["paypal-transmission-sig"],
+                "transmission_time": lowered["paypal-transmission-time"],
+                "webhook_id": self._webhook_id,
+                "webhook_event": event,
+            }
+        except KeyError:
+            return False  # a missing signature header is an unsigned webhook
+        data = await self._request("POST", "/v1/notifications/verify-webhook-signature", json=body)
+        return data.get("verification_status") == "SUCCESS"
 
     # ---- transport ----------------------------------------------------------------------------
 

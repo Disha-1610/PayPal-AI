@@ -8,6 +8,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.monitor import Problem
 from app.schemas.plan import Plan, PlanStep
 from app.schemas.verification import VerificationSpec
 
@@ -29,6 +30,44 @@ class FieldSpec(BaseModel):
     question: str | None = Field(default=None, description="Asked verbatim when a blocking field is missing")
 
 
+class EventRule(BaseModel):
+    """How one event type affects progress. Pure data: the Monitor engine interprets it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    event_type: str = Field(min_length=1)
+    rank: int = Field(ge=0, description="Tie-breaker when two events share a timestamp; later lifecycle = higher")
+    problem: Problem | None = None
+    deadline_field: str | None = Field(
+        default=None, description="Constraint compared with the event's date; with no date_key the problem is unconditional"
+    )
+    date_key: str | None = Field(default=None, description="Payload key holding the new date (ISO 8601)")
+
+
+# Payment events come from PayPal webhooks and mean the same in every domain.
+PAYMENT_RULES = (
+    EventRule(event_type="PAYMENT_CAPTURED", rank=40),
+    EventRule(event_type="PAYMENT_REFUNDED", rank=50),
+    EventRule(event_type="PAYMENT_AUTHORIZATION_VOIDED", rank=30, problem=Problem.PAYMENT_FAILED),
+    EventRule(event_type="PAYMENT_CAPTURE_DENIED", rank=30, problem=Problem.PAYMENT_FAILED),
+)
+
+
+class MonitorSpec(BaseModel):
+    """What the Monitor needs to know about a domain: its events, its deadline and when it is done."""
+
+    model_config = ConfigDict(frozen=True)
+
+    rules: tuple[EventRule, ...] = ()
+    completed_event_types: frozenset[str] = frozenset()
+    deadline_field: str | None = Field(
+        default=None, description="Constraint the timer checks; when passed with work unfinished, DEADLINE_PASSED is raised"
+    )
+
+    def rule(self, event_type: str) -> EventRule | None:
+        return next((r for r in (*self.rules, *PAYMENT_RULES) if r.event_type == event_type), None)
+
+
 class DomainPlugin(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -46,6 +85,8 @@ class DomainPlugin(BaseModel):
     verification: VerificationSpec = Field(
         default_factory=VerificationSpec, description="How Phase 5 verifies delivery before settlement"
     )
+
+    monitor: MonitorSpec = Field(default_factory=MonitorSpec, description="How Phase 7 reads this domain's events")
 
     def field(self, name: str) -> FieldSpec | None:
         return next((f for f in self.fields if f.name == name), None)

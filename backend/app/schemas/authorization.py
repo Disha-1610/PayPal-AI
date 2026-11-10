@@ -27,6 +27,9 @@ class Action(StrEnum):
     AUTHORIZE_PAYMENT = "authorize_payment"
     CAPTURE_PAYMENT = "capture_payment"
     VOID_PAYMENT = "void_payment"
+    REQUEST_REFUND = "request_refund"
+    EXECUTE_REFUND = "execute_refund"
+    OPEN_DISPUTE = "open_dispute"
 
 
 def _utcnow() -> datetime:

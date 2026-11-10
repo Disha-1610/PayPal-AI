@@ -7,6 +7,7 @@ from app.payments.provider import (
     ProviderCapture,
     ProviderError,
     ProviderOrder,
+    ProviderRefund,
 )
 
 
@@ -21,6 +22,7 @@ class FakeProvider:
         self.order_payee: str | None = None
         self.omit_payee = False
         self.capture_status = "completed"
+        self.refund_status = "completed"
         self.fail_next: ProviderError | None = None
         self.auth_status = "created"
         self.get_authorization_fails = False
@@ -76,3 +78,9 @@ class FakeProvider:
 
     async def void(self, *, request_id, authorization_id):
         self._once("void", request_id, lambda: None)
+
+    async def refund(self, *, request_id, capture_id, amount, currency):
+        return self._once(
+            "refund", request_id,
+            lambda: ProviderRefund(refund_id="ref-1", status=self.refund_status, amount=amount, currency=currency),
+        )
