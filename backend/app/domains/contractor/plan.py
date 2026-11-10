@@ -33,7 +33,11 @@ CONTRACTOR = DomainPlugin(
         PlanStep(step_id="negotiate", description="Negotiate rate and terms", depends_on=("evaluate",)),
         PlanStep(step_id="verify", description="Verify credentials and compliance", depends_on=("negotiate",)),
         PlanStep(step_id="approval", description="Ask the user to approve the engagement", depends_on=("verify",)),
-        PlanStep(step_id="engage", description="Create the engagement and fund escrow", depends_on=("approval",)),
+        PlanStep(
+            step_id="engage",
+            description="Create milestone records; authorize, verify and capture each milestone in turn",
+            depends_on=("approval",),
+        ),
     ),
     # No deadline field exists for this domain, so only an explicit overdue report raises deadline risk.
     monitor=MonitorSpec(

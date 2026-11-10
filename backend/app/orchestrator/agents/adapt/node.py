@@ -9,6 +9,7 @@ from datetime import datetime
 
 from langgraph.types import interrupt
 
+from app.audit.events import AuditScope, Phase
 from app.domains.base import DomainPlugin
 from app.llm.providers import LLMProvider
 from app.orchestrator.agents.adapt.diagnosis import diagnose, summarize
@@ -40,6 +41,7 @@ def adapt_node(
     now: datetime,
     policy: AdaptPolicy | None = None,
     excluded_ids: frozenset[str] = frozenset(),
+    audit: AuditScope | None = None,
 ) -> dict[str, object]:
     """Record the failed attempt and choose the next rung, or stop. Makes no external calls."""
     decision = plan_adaptation(
@@ -52,6 +54,17 @@ def adapt_node(
         excluded_ids=excluded_ids,
     )
     step = decision.progress.next_step
+    if audit:
+        audit.emit(
+            Phase.ADAPT, "ADAPTATION_ATTEMPTED", node="adapt", decision=step.name if step else "none",
+            reason=decision.progress.detail or None,
+            metadata={"attempts": decision.progress.attempts, "termination": decision.progress.termination.name if decision.progress.termination else None},
+        )
+        if decision.proposals:
+            audit.emit(
+                Phase.ADAPT, "RELAXATION_PROPOSED", node="adapt", decision="proposed",
+                metadata={"proposals": [{"id": p.proposal_id, "field": p.field_name, "unlocks": len(p.unlocked_ids)} for p in decision.proposals]},
+            )
     return {
         "adapt": decision.progress,
         "relaxation_proposals": list(decision.proposals),
@@ -90,8 +103,14 @@ async def resolve_decision(
     *,
     plugin: DomainPlugin,
     provider: LLMProvider | None = None,
+    audit: AuditScope | None = None,
 ) -> dict[str, object]:
     """Turn the user's answer into a state update. Only here do hard constraints change, always user-sourced."""
+    if audit:
+        audit.emit(
+            Phase.ADAPT, "USER_DECISION", node="adapt", actor_type="user", decision=decision.kind.value,
+            payload=decision.model_dump(mode="json"),
+        )
     progress = state.get("adapt") or AdaptProgress()
     constraints = state.get("constraints", [])
     cleared: dict[str, object] = {"relaxation_proposals": []}
@@ -108,13 +127,15 @@ async def resolve_decision(
         return {**cleared, "constraints": updated, "constraint_diffs": [diff], "status": "adapting"}
 
     assert decision.text is not None  # guaranteed by UserDecision validation for REPLY
-    result, diff, _ = await patch_intent(decision.text, state.get("goal", ""), list(constraints), plugin, provider=provider)
+    result, diff, _ = await patch_intent(
+        decision.text, state.get("goal", ""), list(constraints), plugin, provider=provider, audit=audit
+    )
     return {**cleared, **to_state_update(result, diff)}
 
 
 async def ask_user_node(
-    state: TaskState, *, plugin: DomainPlugin, provider: LLMProvider | None = None
+    state: TaskState, *, plugin: DomainPlugin, provider: LLMProvider | None = None, audit: AuditScope | None = None
 ) -> dict[str, object]:
     """Pause for the user. Nothing with side effects may run above ``interrupt``: LangGraph re-runs this node on resume."""
     raw = interrupt(_request_payload(state.get("relaxation_proposals", [])))
-    return await resolve_decision(parse_decision(raw), state, plugin=plugin, provider=provider)
+    return await resolve_decision(parse_decision(raw), state, plugin=plugin, provider=provider, audit=audit)

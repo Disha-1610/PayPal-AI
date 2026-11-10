@@ -18,6 +18,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.audit.events import Phase
 from app.audit.service import AuditEvent, hash_input, record_critical
 from app.orchestrator.agents.verifier import verify_evidence
 from app.orchestrator.executor.mismatch import MismatchPolicy, classify_mismatch
@@ -190,7 +191,7 @@ async def _audit(
     await record_critical(
         session,
         AuditEvent(
-            run_id=run_id, node="executor", actor_type="system", action=action, resource_type="approval_terms",
+            run_id=run_id, phase=Phase.EXECUTION, node="executor", actor_type="system", action=action, resource_type="approval_terms",
             resource_id=terms.terms_hash(), input_hash=hash_input(report.model_dump(mode="json")), decision=decision,
             reason="; ".join(reasons)[:512] or None,
             metadata_json={"changes": [c.model_dump(mode="json") for c in report.changes]},

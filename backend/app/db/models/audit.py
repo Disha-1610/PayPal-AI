@@ -19,6 +19,7 @@ class AuditLog(Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     run_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    phase: Mapped[str | None] = mapped_column(String(16))  # lifecycle phase, see app.audit.events.Phase
     node: Mapped[str] = mapped_column(String(64), nullable=False)
     actor_type: Mapped[str] = mapped_column(String(32), nullable=False)  # user | agent | system | payment_service
     actor_id: Mapped[str | None] = mapped_column(String(128))
@@ -34,4 +35,5 @@ class AuditLog(Base):
     __table_args__ = (
         Index("ix_audit_logs_run_id_timestamp", "run_id", "timestamp"),
         Index("ix_audit_logs_action", "action"),
+        Index("ix_audit_logs_run_id_phase", "run_id", "phase"),
     )
