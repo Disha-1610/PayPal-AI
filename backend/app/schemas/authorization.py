@@ -94,6 +94,22 @@ class Approval(BaseModel):
         return amount <= self.max_amount if self.max_amount is not None else amount == self.amount
 
 
+class PendingApproval(BaseModel):
+    """The exact terms the user is being asked to approve, stored in task state by trusted code.
+
+    The approval endpoint reads this server-side copy and never accepts terms from the client, so the
+    user can only approve (or reject) what the backend actually proposed.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    action: Action
+    candidate_id: str
+    platform: str
+    terms: ApprovalTerms
+    terms_hash: str
+
+
 # Decides whether an approval is genuine (signature, terms, owner). Supplied by trusted code
 # (``approval_guard.signed_approval_verifier``); this module cannot verify HMACs itself.
 ApprovalVerifier = Callable[["Approval"], bool]

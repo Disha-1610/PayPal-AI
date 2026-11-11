@@ -1,5 +1,11 @@
+from decimal import Decimal
+
 from app.domains.base import DomainPlugin, EventRule, FieldSpec, MonitorSpec, ValueType
+from app.orchestrator.agents.negotiator.offer import envelope_from_terms
+from app.schemas.approval_terms import ApprovalTerms, to_minor_units
+from app.schemas.constraints import Constraint
 from app.schemas.monitor import Problem
+from app.schemas.negotiator import NegotiationEnvelope
 from app.schemas.plan import PlanStep
 
 # Credentials and spend authority are granted through ``TaskAuthorization``, never extracted from chat.
@@ -50,3 +56,15 @@ A2A = DomainPlugin(
         deadline_field="deadline",
     ),
 )
+
+
+def negotiation_envelope(
+    terms: ApprovalTerms, constraints: list[Constraint], *, non_negotiable_terms: dict[str, str] | None = None
+) -> NegotiationEnvelope:
+    """The user-approved bounds for an A2A deal: the user's ``price_ceiling`` caps any counter-offer.
+    Without an active ceiling the approved maximum applies, so the budget is never silently raised."""
+    ceilings = [c for c in constraints if c.active and c.field_name == "price_ceiling"]
+    ceiling = None
+    if ceilings:
+        ceiling = to_minor_units(min(Decimal(str(c.target_value)) for c in ceilings), terms.currency)
+    return envelope_from_terms(terms, max_total_minor=ceiling, non_negotiable_terms=non_negotiable_terms)

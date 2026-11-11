@@ -8,17 +8,19 @@ Nodes read the state and return a *partial* update. Rules enforced here:
   * Constraint updates are upserts by id, must advance the revision, and must keep history.
 """
 
+from datetime import datetime
 from operator import add
 from typing import Annotated, TypedDict
 
 from app.orchestrator.guard.constraint_guard import assert_revision_allowed
 from app.schemas.adapt import AdaptProgress, RelaxationProposal
-from app.schemas.authorization import Approval, TaskAuthorization
+from app.schemas.authorization import Approval, PendingApproval, TaskAuthorization
 from app.schemas.candidate import Candidate
 from app.schemas.constraints import Constraint, ConstraintDiff, diff_constraints
 from app.schemas.coordinator import CoordinatorProgress
 from app.schemas.discovery import DiscoveryProgress
 from app.schemas.evaluator import EvaluationReport
+from app.schemas.recheck import MismatchReport
 
 STATE_VERSION = 1
 
@@ -79,6 +81,14 @@ class TaskState(TypedDict, total=False):
     relaxation_proposals: list[RelaxationProposal]
     selected_candidate_id: str
     order_id: str
+    domain: str  # domain plug-in name; the Monitor loads its spec from this
+    anchor_at: datetime  # when the order/engagement started; turns "within N days" into a date
+    pending_approval: PendingApproval | None  # terms awaiting the user's decision; cleared once answered
+    negotiation_round: int  # incremented by the Router per negotiation round
+    recheck_report: MismatchReport  # the Executor's last recheck; the Router reads it
+    payment_id: str  # ledger payment of the order in flight (a UUID string)
+    approval_url: str | None  # where the payer approves at the provider
+    settle_attempt: int  # verification attempts so far
 
 
 STATE_FIELDS = frozenset(TaskState.__annotations__)

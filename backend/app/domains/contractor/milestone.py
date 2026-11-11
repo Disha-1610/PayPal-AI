@@ -20,6 +20,7 @@ not guarantee funds beyond its honor period (the payment service reauthorizes wi
 """
 
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,10 +30,12 @@ from app.core.hashing import stable_hash
 from app.db.models.milestone import Milestone, MilestoneStatus, VerificationStatus
 from app.domains.contractor.schemas import MilestonePlan
 from app.orchestrator.executor.executor import Executor, OrderPlaced, Settlement
+from app.orchestrator.agents.negotiator.offer import envelope_from_terms
 from app.orchestrator.executor.state import ExecutionState
 from app.payments.service import PaymentPermit
 from app.schemas.approval_terms import ApprovalTerms, to_minor_units
 from app.schemas.authorization import Approval
+from app.schemas.negotiator import NegotiationEnvelope
 from app.schemas.verification import VerificationVerdict
 
 _NODE = "contractor_milestones"
@@ -67,6 +70,21 @@ def terms_for(row: Milestone) -> ApprovalTerms:
         latest_acceptable_at=_aware(row.due_date),
         permissions=frozenset({_PERMISSION}),
         domain_data={"plan_hash": row.plan_hash, "sequence": row.sequence, "criteria_hash": _criteria_hash(row)},
+    )
+
+
+def negotiation_envelope(
+    row: Milestone, *, max_total: Decimal | None = None, latest_acceptable_at: datetime | None = None
+) -> NegotiationEnvelope:
+    """The user-approved bounds for renegotiating one milestone. Defaults are the approved amount and due date,
+    so a milestone can never be renegotiated above budget unless the user's constraints grant a higher ``max_total``.
+    The acceptance criteria are fixed: a counter-offer that drops or changes them is outside the envelope."""
+    return envelope_from_terms(
+        terms_for(row),
+        max_total_minor=None if max_total is None else to_minor_units(max_total, row.currency),
+        latest_acceptable_at=latest_acceptable_at,
+        non_negotiable_terms={"criteria_hash": _criteria_hash(row)},
+        baseline_terms={"criteria_hash": _criteria_hash(row)},
     )
 
 
@@ -227,5 +245,6 @@ class MilestoneService:
 
 
 __all__ = [
-    "MilestoneError", "MilestoneOutOfOrder", "MilestonePlanChanged", "MilestoneService", "order_reference", "terms_for",
+    "MilestoneError", "MilestoneOutOfOrder", "MilestonePlanChanged", "MilestoneService", "negotiation_envelope",
+    "order_reference", "terms_for",
 ]

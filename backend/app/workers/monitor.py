@@ -1,0 +1,145 @@
+"""Monitor worker: turns applied Monitor results into graph actions, and sweeps for passed deadlines.
+
+Runs in the worker process (never an LLM): ``route_monitor_result`` decides, this module executes.
+
+* ADAPT / ASK_USER      -> hand the run to Adapt (``RunController.replan``)
+* REPLAN_POST_PURCHASE  -> release the money first (void a hold, refund a capture) through the Guard-gated payment
+                           service, and only then Adapt. If the release is blocked (missing approval, denied, provider
+                           not ready) the run is NOT replanned: buying again while funds are committed is never allowed.
+* REMEDY                -> request a refund through ``monitor.remedy`` (gated), then Adapt
+* CLOSE                 -> mark the run completed
+"""
+
+from collections.abc import Awaitable, Callable, Sequence
+from uuid import UUID
+
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.audit.events import AuditScope, AuditSink, Phase
+from app.core.logging import get_logger
+from app.db.models.payment import Payment, PaymentStatus
+from app.db.session import session_scope
+from app.monitor.events.processor import EventProcessor
+from app.monitor.remedy import RemedyOutcome, request_refund
+from app.monitor.timers.scheduler import overdue_events
+from app.orchestrator.graph.runtime import RunController, UnknownRun
+from app.orchestrator.guard.approval_guard import signed_approval_verifier
+from app.orchestrator.router.monitor import route_monitor_result
+from app.payments.service import PaymentPermit, PaymentService, PaymentServiceError
+from app.schemas.monitor import MonitorResult, Route
+
+logger = get_logger(__name__)
+_NODE = "monitor_worker"
+_HELD = frozenset({PaymentStatus.CREATED.value, PaymentStatus.AUTHORIZED.value})
+
+
+class MonitorWorker:
+    def __init__(
+        self,
+        runs: RunController,
+        payments: PaymentService,
+        session_factory: async_sessionmaker[AsyncSession],
+        audit_sink: AuditSink,
+        approval_keys: dict[str, bytes],
+        active_runs: Callable[[], Awaitable[Sequence[str]]],
+    ) -> None:
+        self._runs, self._payments, self._factory = runs, payments, session_factory
+        self._sink, self._keys, self._active_runs = audit_sink, approval_keys, active_runs
+
+    async def handle(self, result: MonitorResult) -> Route:
+        """Act on one applied result. Never raises for a run that cannot be acted on: the event is already stored."""
+        route = route_monitor_result(result)
+        run_id = result.event.run_id
+        audit = AuditScope(self._sink, run_id)
+        audit.emit(
+            Phase.MONITOR, "MONITOR_ROUTED", node=_NODE, decision=route.value,
+            metadata={"event_type": result.event.event_type, "problem": result.problem.value if result.problem else None},
+        )
+        try:
+            match route:
+                case Route.CONTINUE_MONITORING:
+                    pass
+                case Route.CLOSE:
+                    await self._runs.set_status(run_id, "completed")
+                case Route.ADAPT | Route.ASK_USER:
+                    await self._runs.replan(run_id)
+                case Route.REPLAN_POST_PURCHASE:
+                    if await self._release_funds(run_id, audit):
+                        await self._runs.replan(run_id)
+                case Route.REMEDY:
+                    if await self._refund(run_id, audit):
+                        await self._runs.replan(run_id)
+        except UnknownRun:
+            logger.warning("monitor result for an unknown run", extra={"run_id": run_id})
+        return route
+
+    async def sweep(self, processor: EventProcessor) -> int:
+        """Raise ``DEADLINE_PASSED`` for overdue unfinished work and handle what applies. Idempotent per deadline."""
+        handled = 0
+        for run_id in await self._active_runs():
+            try:
+                view = await self._runs.load_task(run_id)
+            except UnknownRun:
+                continue
+            async with session_scope(self._factory) as session:
+                events = await overdue_events(session, view)
+                results = [await processor.process(session, event) for event in events]
+            for result in results:
+                if result.outcome.value == "applied":
+                    await self.handle(result)
+                    handled += 1
+        return handled
+
+    # ---- money -------------------------------------------------------------------------------------
+
+    async def _permit(self, run_id: str) -> tuple[PaymentPermit, UUID]:
+        state = await self._runs.state(run_id)
+        approvals = tuple(state.get("approvals", []))
+        if not approvals or not state.get("payment_id"):
+            raise PaymentServiceError("run has no approved payment")
+        approved = approvals[-1]
+        assert approved.terms is not None
+        verifier = signed_approval_verifier(
+            current_terms=approved.terms, keys=self._keys, run_id=run_id, session_id=approved.session_id or "",
+            approved_by=approved.approved_by,
+        )
+        permit = PaymentPermit(authorization=state["authorization"], platform=approved.platform, approvals=approvals, verifier=verifier)
+        return permit, UUID(state["payment_id"])
+
+    async def _release_funds(self, run_id: str, audit: AuditScope) -> bool:
+        """Void a hold or refund a capture. True only when nothing is left committed."""
+        try:
+            permit, payment_id = await self._permit(run_id)
+            async with session_scope(self._factory) as session:
+                payment = await session.get(Payment, payment_id)
+                if payment is None:
+                    raise PaymentServiceError("payment not found")
+                if payment.status in _HELD:
+                    await self._payments.void(session, payment_id, permit=permit, reason="replan after a Monitor problem")
+                    return True
+                if payment.status == PaymentStatus.CAPTURED.value:
+                    decision = await request_refund(
+                        session, self._payments, payment_id, permit=permit, reason="replan after a Monitor problem"
+                    )
+                    if decision.outcome is not RemedyOutcome.EXECUTED:
+                        audit.emit(Phase.MONITOR, "REPLAN_BLOCKED", node=_NODE, decision=decision.outcome.value, reason=decision.reason)
+                        await self._runs.set_status(run_id, "release_blocked")
+                        return False
+                return True  # already voided / refunded / failed: nothing is committed
+        except PaymentServiceError as exc:  # includes denied and not-ready: retried on the next event or sweep
+            audit.emit(Phase.MONITOR, "REPLAN_BLOCKED", node=_NODE, decision="release_failed", reason=str(exc))
+            await self._runs.set_status(run_id, "release_blocked")
+            return False
+
+    async def _refund(self, run_id: str, audit: AuditScope) -> bool:
+        try:
+            permit, payment_id = await self._permit(run_id)
+            async with session_scope(self._factory) as session:
+                decision = await request_refund(session, self._payments, payment_id, permit=permit, reason="non-delivery")
+        except PaymentServiceError as exc:
+            audit.emit(Phase.MONITOR, "REMEDY_FAILED", node=_NODE, decision="failed", reason=str(exc))
+            await self._runs.set_status(run_id, "remedy_blocked")
+            return False
+        if decision.outcome is not RemedyOutcome.EXECUTED:
+            await self._runs.set_status(run_id, f"remedy_{decision.outcome.value}")
+        return decision.outcome is RemedyOutcome.EXECUTED
