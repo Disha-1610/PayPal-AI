@@ -24,6 +24,14 @@ export function formatTime(iso: string): string {
   return Number.isNaN(date.getTime()) ? "" : time.format(date);
 }
 
+export function formatMoney(amount: number, currency: string): string {
+  try {
+    return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(amount);
+  } catch {
+    return `${amount.toFixed(2)} ${currency}`; // unknown/invalid currency code
+  }
+}
+
 export function formatUsd(amount: number): string {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(amount);
+  return formatMoney(amount, "USD");
 }

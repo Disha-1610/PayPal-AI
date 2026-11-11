@@ -1,4 +1,5 @@
 import type { ApprovalRequest } from "@/features/approvals/types";
+import type { PaymentInfo } from "@/features/payment/types";
 import type { ChatMessage } from "@/features/chat/types";
 import type { Candidate } from "@/features/candidates/types";
 
@@ -6,6 +7,7 @@ export type RunStatus =
   | "running"
   | "awaiting_input"
   | "awaiting_approval"
+  | "awaiting_payment"
   | "completed"
   | "failed"
   | "stopped";
@@ -15,6 +17,7 @@ export const ACTIVE_STATUSES: readonly RunStatus[] = [
   "running",
   "awaiting_input",
   "awaiting_approval",
+  "awaiting_payment",
 ];
 
 export type StepStatus = "pending" | "running" | "done" | "failed" | "skipped";
@@ -54,6 +57,9 @@ export interface Run {
   pending_approval?: ApprovalRequest;
   candidates?: Candidate[];
   messages?: ChatMessage[];
+  payment?: PaymentInfo;
+  /** Why the run ended early; set when `status` is "stopped" or "failed". */
+  stop_reason?: string;
   steps: PlanStep[];
 }
 

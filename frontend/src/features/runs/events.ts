@@ -2,6 +2,7 @@ import type { SSEMessage } from "@/lib/sse";
 import type { ApprovalRequest } from "@/features/approvals/types";
 import type { Candidate } from "@/features/candidates/types";
 import type { ChatMessage } from "@/features/chat/types";
+import type { PaymentInfo } from "@/features/payment/types";
 import type { PlanStep, Run, RunStatus } from "./types";
 
 /**
@@ -10,7 +11,14 @@ import type { PlanStep, Run, RunStatus } from "./types";
  */
 export type RunEvent =
   | { type: "run.snapshot"; run: Run }
-  | { type: "run.status"; status: RunStatus; iteration: number; updated_at: string }
+  | {
+      type: "run.status";
+      status: RunStatus;
+      iteration: number;
+      updated_at: string;
+      stop_reason?: string;
+    }
+  | { type: "payment.updated"; payment: PaymentInfo }
   | { type: "step.updated"; step: PlanStep }
   | { type: "candidates.updated"; candidates: Candidate[] }
   | { type: "message.added"; message: ChatMessage }
@@ -45,7 +53,14 @@ export function parseRunEvent(message: SSEMessage): RunEvent | null {
             status: payload.status as RunStatus,
             iteration: payload.iteration,
             updated_at: payload.updated_at,
+            ...(typeof payload.stop_reason === "string" ? { stop_reason: payload.stop_reason } : {}),
           }
+        : null;
+    case "payment.updated":
+      return isRecord(payload.payment) &&
+        typeof payload.payment.status === "string" &&
+        typeof payload.payment.order_id === "string"
+        ? { type: message.event, payment: payload.payment as unknown as PaymentInfo }
         : null;
     case "step.updated":
       return isRecord(payload.step) && typeof payload.step.id === "string"
@@ -83,7 +98,10 @@ export function applyRunEvent(run: Run, event: RunEvent): Run {
         status: event.status,
         iteration: event.iteration,
         updated_at: event.updated_at,
+        stop_reason: event.stop_reason ?? run.stop_reason,
       };
+    case "payment.updated":
+      return { ...run, payment: event.payment };
     case "step.updated": {
       const exists = run.steps.some((s) => s.id === event.step.id);
       const steps = exists

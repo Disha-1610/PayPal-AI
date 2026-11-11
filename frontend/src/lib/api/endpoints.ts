@@ -77,6 +77,18 @@ export async function sendRunMessage(
   return message;
 }
 
+/**
+ * Tell the backend the payer came back from PayPal so the paused run can resume.
+ * Sends no PayPal params: the backend verifies the order itself, and the outcome
+ * arrives via webhooks / run state, never from this call.
+ */
+export async function notifyPayerReturn(runId: string, signal?: AbortSignal): Promise<void> {
+  await request<unknown>(`/runs/${encodeURIComponent(runId)}/payer-return`, {
+    method: "POST",
+    signal,
+  });
+}
+
 /** Fetch a single run. 404 means it does not exist or is not visible to the caller. */
 export async function getRun(runId: string, signal?: AbortSignal): Promise<Run> {
   const run = await request<Run>(`/runs/${encodeURIComponent(runId)}`, { signal });

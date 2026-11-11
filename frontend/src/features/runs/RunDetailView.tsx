@@ -7,6 +7,8 @@ import { ConnectionBadge } from "@/components/ConnectionBadge";
 import { useRunState } from "@/hooks/useRunState";
 import { ApprovalCard } from "@/features/approvals/ApprovalCard";
 import { CandidatesPanel } from "@/features/candidates/CandidatesPanel";
+import { OutcomeSummary } from "@/features/payment/OutcomeSummary";
+import { PaymentStatusCard } from "@/features/payment/PaymentStatusCard";
 import { PlanTimeline } from "@/features/plan/PlanTimeline";
 import { StepInspector } from "@/features/plan/StepInspector";
 import { RunSummary } from "./RunSummary";
@@ -31,6 +33,10 @@ export function RunDetailView({ run: initialRun }: { run: Run }) {
         </div>
       ) : null}
       <RunSummary run={run} />
+      <OutcomeSummary run={run} />
+      {run.payment ? (
+        <PaymentStatusCard payment={run.payment} awaitingPayer={run.status === "awaiting_payment"} />
+      ) : null}
       {run.status === "awaiting_approval" && run.pending_approval ? (
         <ApprovalCard key={run.pending_approval.terms_hash} request={run.pending_approval} />
       ) : null}
