@@ -67,6 +67,8 @@ class TaskState(TypedDict, total=False):
     constraint_diffs: Annotated[list[ConstraintDiff], add]
     approvals: Annotated[list[Approval], add]
     errors: Annotated[list[str], add]
+    cycles: Annotated[int, add]  # entries into the search loop; each node adds 1, never overwrites
+    cycle_hashes: Annotated[list[str], add]  # progress hash at each entry; a repeat means no progress
 
     # --- single-owner fields (last write wins) ---
     status: str
@@ -89,6 +91,7 @@ class TaskState(TypedDict, total=False):
     payment_id: str  # ledger payment of the order in flight (a UUID string)
     approval_url: str | None  # where the payer approves at the provider
     settle_attempt: int  # verification attempts so far
+    stop_reason: str  # why the task ended early (set by stop_report)
 
 
 STATE_FIELDS = frozenset(TaskState.__annotations__)

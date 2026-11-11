@@ -4,11 +4,15 @@ Every conditional edge calls a function from ``orchestrator.router``; every node
 executor step. Nodes never call each other. Two user interrupts bracket the money path: the platform approval
 (``await_approval``) and the payer's approval at PayPal (``await_payer``).
 
-    intent -> (ask_user | discovery loop | end)
-    discovery loop -> evaluate -> (select | discovery | coordinator)
-    coordinator -> (discovery | switch_candidate | adapt | end)
-    select -> recheck -> (request_approval | evaluate | adapt) -> await_approval -> place_order
-    place_order -> await_payer -> settle -> (end | discovery | await_payer)
+    intent -> (ask_user | discovery loop | stop_report)
+    discovery loop -> guard_evaluate -> evaluate -> (select | discovery | coordinator)
+    coordinator -> (discovery | switch_candidate | adapt | stop_report)
+    select -> guard_execute -> recheck -> (request_approval | evaluate | adapt) -> await_approval
+    await_approval -> guard_pay -> place_order -> await_payer -> settle -> (end | discovery | await_payer)
+
+Every Guard failure, an exhausted Coordinator/Adapt, a rejected approval and the global limits (``GraphLimits``:
+cycle cap, repeated progress hash) end at ``stop_report``. Verification (the Verifier's PASS/FAIL -> capture/void)
+runs inside ``settle`` through the Executor, so there is no separate verifier node.
 
 Monitor events enter at ``monitor_intake`` (see ``workers.monitor``), which hands the task back to Adapt.
 """
@@ -44,12 +48,22 @@ from app.orchestrator.agents.intent.agent import extract_intent, to_state_update
 from app.orchestrator.executor.executor import ExecutionBlocked, Executor
 from app.orchestrator.executor.state import ExecutionState
 from app.orchestrator.graph.approval import await_approval_node, request_approval_node
+from app.orchestrator.graph.stop import stop_report_node
 from app.orchestrator.guard.approval_guard import signed_approval_verifier
+from app.orchestrator.guard.graph_guard import (
+    GUARD_BLOCKED,
+    GUARD_PASSED,
+    guard_discovery_data,
+    guard_execution,
+    guard_payment,
+)
 from app.orchestrator.router.coordinator import CoordinatorRoute, route_coordinator_result
 from app.orchestrator.router.discovery import route_discovery
 from app.orchestrator.router.evaluator import EvaluatorRoute, route_evaluation
 from app.orchestrator.router.executor import ExecutorRoute, route_execution
+from app.orchestrator.progress.hashing import progress_hash
 from app.orchestrator.router.intent import IntentRoute, route_intent
+from app.orchestrator.router.limits import GraphLimits, LimitRoute, route_limits
 from app.orchestrator.router.payment import PaymentRoute, route_payment_error
 from app.payments.service import PaymentPermit, PaymentServiceError
 from app.schemas.adapt import RecoveryStep
@@ -80,6 +94,7 @@ class GraphDeps:
     provider: LLMProvider | None = None
     discovery_policy: DiscoveryPolicy = field(default_factory=DiscoveryPolicy)
     now: Callable[[], datetime] = utcnow
+    limits: GraphLimits = field(default_factory=GraphLimits)
 
 
 def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None) -> Any:
@@ -111,13 +126,13 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
     def after_intent(state: TaskState) -> str:
         result = IntentResult(status=IntentStatus(state["status"]), goal=state.get("goal", ""), constraints=())
         route = route_intent(result, audit=scope(state))
-        return {IntentRoute.DISCOVERY: "discovery_start", IntentRoute.ASK_USER: "adapt", IntentRoute.REPORT: END}[route]
+        return {IntentRoute.DISCOVERY: "discovery_start", IntentRoute.ASK_USER: "adapt", IntentRoute.REPORT: "stop_report"}[route]
 
     async def ask_user(state: TaskState) -> dict[str, object]:
         return await ask_user_node(state, plugin=d.plugin, provider=d.provider, audit=scope(state))
 
     def after_ask_user(state: TaskState) -> str:
-        return END if state.get("status") in {"failed", "cancelled"} else "discovery_start"
+        return "stop_report" if state.get("status") in {"failed", "cancelled"} else "discovery_start"
 
     def adapt(state: TaskState) -> dict[str, object]:
         return adapt_node(state, plugin=d.plugin, now=d.now(), audit=scope(state))
@@ -126,12 +141,17 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
         step = state["adapt"].next_step
         if step is RecoveryStep.ASK_USER:
             return "ask_user"
-        return END if step is None or step is RecoveryStep.STOP else "discovery_start"
+        return "stop_report" if step is None or step is RecoveryStep.STOP else "discovery_start"
 
     # ---- discovery loop ----------------------------------------------------------------------------
 
     def discovery_start(state: TaskState) -> dict[str, object]:
-        return discovery_start_node(state, audit=scope(state))
+        digest = progress_hash((c.candidate_id for c in state.get("candidates", [])), state.get("constraints", []))
+        # ``cycles`` / ``cycle_hashes`` use add-reducers: the node contributes a delta, never rewrites the total.
+        return {**discovery_start_node(state, audit=scope(state)), "cycles": 1, "cycle_hashes": [digest]}
+
+    def after_discovery_start(state: TaskState) -> str:
+        return {LimitRoute.CONTINUE: "discovery_search", LimitRoute.STOP: "stop_report"}[route_limits(state, d.limits)]
 
     async def discovery_search(state: TaskState) -> dict[str, object]:
         return await discovery_search_node(
@@ -165,6 +185,31 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
         )
         return update
 
+    # ---- guard nodes: every path into the Evaluator, Executor and Payment passes through one ----------
+
+    def guarded(passed: str) -> Callable[[TaskState], str]:
+        """Route on the Guard's status. Unknown status fails closed to ``stop_report``."""
+        table = {GUARD_PASSED: passed, GUARD_BLOCKED: "stop_report"}
+        return lambda state: table.get(state.get("status", ""), "stop_report")
+
+    def guard_evaluate(state: TaskState) -> dict[str, object]:
+        return guard_discovery_data(state, now=d.now(), audit=scope(state))
+
+    def guard_execute(state: TaskState) -> dict[str, object]:
+        return guard_execution(state, now=d.now(), audit=scope(state))
+
+    def guard_pay(state: TaskState) -> dict[str, object]:
+        terms = state["approvals"][-1].terms if state.get("approvals") else None
+        if terms is None:
+            return {"status": GUARD_BLOCKED, "errors": ["guard blocked payment: no approved terms on record"]}
+        return guard_payment(
+            state, terms=d.terms_for(candidate(state), state), verifier=permit_for(state, terms).verifier,
+            now=d.now(), audit=scope(state),
+        )
+
+    def stop_report(state: TaskState) -> dict[str, object]:
+        return stop_report_node(state, limits=d.limits, audit=scope(state))
+
     def after_evaluate(state: TaskState) -> str:
         route = route_evaluation(state["evaluation"], audit=scope(state))
         return {EvaluatorRoute.EXECUTE: "select", EvaluatorRoute.SEARCH: "discovery_start", EvaluatorRoute.COORDINATOR: "coordinator"}[route]
@@ -182,7 +227,7 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
         )
         return {
             CoordinatorRoute.SEARCH: "discovery_start", CoordinatorRoute.SWITCH_CANDIDATE: "switch_candidate",
-            CoordinatorRoute.ASK_USER: "adapt", CoordinatorRoute.STOP: END,
+            CoordinatorRoute.ASK_USER: "adapt", CoordinatorRoute.STOP: "stop_report",
         }[route]
 
     def select(state: TaskState) -> dict[str, object]:
@@ -198,7 +243,7 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
         return {"selected_candidate_id": later[0], "status": "selected"}
 
     def after_switch(state: TaskState) -> str:
-        return END if state.get("status") == "failed" else "recheck"
+        return "stop_report" if state.get("status") == "failed" else "guard_execute"
 
     # ---- execute: recheck -> approval -> order -> payer -> settle ---------------------------------------
 
@@ -222,7 +267,7 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
         return request_approval_node(state, audit=scope(state))
 
     def after_approval(state: TaskState) -> str:
-        return "place_order" if state.get("status") == "approved" else END
+        return "guard_pay" if state.get("status") == "approved" else "stop_report"
 
     async def place_order(state: TaskState) -> dict[str, object]:
         terms = state["approvals"][-1].terms
@@ -292,24 +337,29 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
         "switch_candidate": switch_candidate, "recheck": recheck, "request_approval": request_approval,
         "await_approval": await_approval_node, "place_order": place_order, "await_payer": await_payer, "settle": settle,
         "monitor_intake": monitor_intake,
+        "guard_evaluate": guard_evaluate, "guard_execute": guard_execute, "guard_pay": guard_pay, "stop_report": stop_report,
     }.items():
         graph.add_node(name, node)
 
     graph.add_edge(START, "intent")
-    graph.add_conditional_edges("intent", after_intent, ["discovery_start", "adapt", END])
-    graph.add_conditional_edges("adapt", after_adapt, ["ask_user", "discovery_start", END])
-    graph.add_conditional_edges("ask_user", after_ask_user, ["discovery_start", END])
-    graph.add_edge("discovery_start", "discovery_search")
+    graph.add_conditional_edges("intent", after_intent, ["discovery_start", "adapt", "stop_report"])
+    graph.add_conditional_edges("adapt", after_adapt, ["ask_user", "discovery_start", "stop_report"])
+    graph.add_conditional_edges("ask_user", after_ask_user, ["discovery_start", "stop_report"])
+    graph.add_conditional_edges("discovery_start", after_discovery_start, ["discovery_search", "stop_report"])
     for name in ("discovery_search", "discovery_adapt", "discovery_advance"):
         graph.add_conditional_edges(name, after_discovery, ["discovery_search", "discovery_adapt", "discovery_advance", "discovery_finish"])
-    graph.add_edge("discovery_finish", "evaluate")
+    graph.add_edge("discovery_finish", "guard_evaluate")
+    graph.add_conditional_edges("guard_evaluate", guarded("evaluate"), ["evaluate", "stop_report"])
     graph.add_conditional_edges("evaluate", after_evaluate, ["select", "discovery_start", "coordinator"])
-    graph.add_conditional_edges("coordinator", after_coordinator, ["discovery_start", "switch_candidate", "adapt", END])
-    graph.add_edge("select", "recheck")
-    graph.add_conditional_edges("switch_candidate", after_switch, ["recheck", END])
+    graph.add_conditional_edges("coordinator", after_coordinator, ["discovery_start", "switch_candidate", "adapt", "stop_report"])
+    graph.add_edge("select", "guard_execute")
+    graph.add_conditional_edges("switch_candidate", after_switch, ["guard_execute", "stop_report"])
+    graph.add_conditional_edges("guard_execute", guarded("recheck"), ["recheck", "stop_report"])
     graph.add_conditional_edges("recheck", after_recheck, ["request_approval", "evaluate", "adapt"])
     graph.add_edge("request_approval", "await_approval")
-    graph.add_conditional_edges("await_approval", after_approval, ["place_order", END])
+    graph.add_conditional_edges("await_approval", after_approval, ["guard_pay", "stop_report"])
+    graph.add_conditional_edges("guard_pay", guarded("place_order"), ["place_order", "stop_report"])
+    graph.add_edge("stop_report", END)
     graph.add_conditional_edges("place_order", after_place_order, ["await_payer", "evaluate", "adapt"])
     graph.add_edge("await_payer", "settle")
     graph.add_edge("monitor_intake", "adapt")
