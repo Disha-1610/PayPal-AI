@@ -113,6 +113,14 @@ export function submitApproval(
 }
 
 /**
+ * Cancel a paused run. The backend releases any held funds first; 409 means the run is busy,
+ * already finished, or its funds could not be released (the run then stays open).
+ */
+export async function cancelRun(runId: string, signal?: AbortSignal): Promise<void> {
+  await request<unknown>(`/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST", signal });
+}
+
+/**
  * Webhook ingest. PayPal calls this server-to-server; exposed only for local
  * sandbox/testing tools — the browser must never hold real transmission signatures.
  */

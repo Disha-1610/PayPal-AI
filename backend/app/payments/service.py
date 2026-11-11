@@ -291,6 +291,20 @@ class PaymentService:
                 f"{action.value} denied: {decision.reason}", requires_approval=decision.requires_approval
             )
 
+    async def fail_if_hold_released(self, session: AsyncSession, payment_id: UUID) -> bool:
+        """Reconciliation repair: if PayPal no longer holds the funds of an AUTHORIZED payment (voided or expired there),
+        fail the ledger row so the run can re-source. Ledger only: no money moves and no permit is needed. The status
+        is read from PayPal here, never taken from the caller. Raises ``ProviderError`` if PayPal cannot be read."""
+        payment = await session.get(Payment, payment_id)
+        if payment is None or payment.status != PaymentStatus.AUTHORIZED.value:
+            return False
+        authorization_id = await self._authorization_id(session, payment_id)
+        current = await self._provider.get_authorization(authorization_id)
+        if current.status not in {"voided", "expired"}:
+            return False
+        await self._lapse(session, payment, f"reconciliation: {current.status} at provider")
+        return True
+
     async def _provider_status(self, authorization_id: str, original: ProviderError) -> str:
         """After a failed capture/void, read the authorization's real status from PayPal.
 

@@ -89,6 +89,17 @@ class RunController:
         await self._graph.aupdate_state(self._config(run_id), {"incoming_offer": offer}, as_node="negotiation_intake")
         return await self._graph.ainvoke(None, self._config(run_id))
 
+    async def cancel(self, run_id: str) -> TaskState:
+        """End a paused run at the user's request: the graph finishes through ``stop_report`` with status ``cancelled``
+        and any pending approval is withdrawn, so nothing can still be approved or resumed. Funds are released by the
+        caller first (``MonitorWorker.release_for_cancel``); this only closes the run."""
+        await self._graph.aupdate_state(
+            self._config(run_id),
+            {"status": "cancelled", "stop_reason": "cancelled by the user", "pending_approval": None},
+            as_node="stop_report",
+        )
+        return await self.state(run_id)
+
     async def set_status(self, run_id: str, status: str) -> None:
         await self._graph.aupdate_state(self._config(run_id), {"status": status})
 

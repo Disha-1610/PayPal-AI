@@ -73,6 +73,15 @@ class MonitorWorker:
             logger.warning("monitor result for an unknown run", extra={"run_id": run_id})
         return route
 
+    async def release_for_cancel(self, run_id: str) -> bool:
+        """The user cancelled: release whatever is committed through the Guard-gated payment service. True when
+        nothing is left committed (no payment yet, voided, or already released); False when it could not be released
+        (captured money needs an approved refund), in which case the run must stay open."""
+        state = await self._runs.state(run_id)
+        if not state.get("payment_id"):
+            return True  # nothing was ordered yet
+        return await self._release_funds(run_id, AuditScope(self._sink, run_id))
+
     async def sweep(self, processor: EventProcessor) -> int:
         """Raise ``DEADLINE_PASSED`` for overdue unfinished work and handle what applies. Idempotent per deadline."""
         handled = 0

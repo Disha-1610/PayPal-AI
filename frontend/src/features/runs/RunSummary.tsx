@@ -1,5 +1,6 @@
 import { Card, CardBody } from "@/components/Card";
 import { formatDateTime, formatUsd } from "@/lib/utils";
+import { CancelRunButton } from "./CancelRunButton";
 import { RunStatusBadge } from "./RunStatusBadge";
 import type { Run } from "./types";
 
@@ -19,6 +20,9 @@ export function RunSummary({ run }: { run: Run }) {
         <div className="flex items-start justify-between gap-4">
           <h1 className="text-lg font-semibold text-slate-900">{run.goal}</h1>
           <RunStatusBadge status={run.status} />
+        </div>
+        <div className="mt-3 flex justify-end">
+          <CancelRunButton run={run} />
         </div>
         <dl className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
           <Stat label="Budget" value={formatUsd(run.budget_usd)} />

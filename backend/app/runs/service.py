@@ -5,7 +5,7 @@ import asyncio
 import base64
 import binascii
 import hashlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -21,7 +21,7 @@ from app.db.models.run import RunRecord
 from app.db.models.run_message import RunMessage
 from app.db.session import session_scope
 from app.orchestrator.graph.runtime import RunController, RunSnapshot, UnknownRun
-from app.runs.view import MessageView, RunView, message_view, question_text, run_view
+from app.runs.view import TERMINAL_STATUSES, MessageView, derive_status, RunView, message_view, question_text, run_view
 from app.schemas.authorization import Action, TaskAuthorization
 from app.schemas.state import make_initial_state
 
@@ -41,6 +41,14 @@ _AUTHORIZATION_TTL = timedelta(days=7)
 
 class InvalidCursor(ValueError):
     """The pagination cursor was not issued by this service."""
+
+
+class RunBusy(Exception):
+    """The graph is executing a step for this run; its state cannot be changed from outside until it pauses."""
+
+
+class CannotCancel(Exception):
+    """The run is already finished, or its committed funds could not be released (so it must stay open)."""
 
 
 class NotAwaiting(Exception):
@@ -89,8 +97,10 @@ class RunService:
         runs: RunController,
         session_factory: async_sessionmaker[AsyncSession],
         platforms: frozenset[str],
+        release_funds: Callable[[str], Awaitable[bool]] | None = None,
     ) -> None:
         self._runs, self._factory, self._platforms = runs, session_factory, platforms
+        self._release_funds = release_funds  # releases committed money before a cancel; None: nothing to release
         self._tasks: set[asyncio.Task[None]] = set()
         self._resuming: set[str] = set()  # runs with a resume in flight: a second one would re-run the paused node
 
@@ -192,6 +202,25 @@ class RunService:
         self._resume_in_background(run_id, {"payer_returned": True})
         return True
 
+    async def cancel(self, user_id: str, run_id: str) -> bool:
+        """Cancel a run that is paused (asking, awaiting approval, or awaiting the payer). Committed funds are released
+        first; if that is not possible the run stays open. False if not found; raises ``RunBusy`` / ``CannotCancel``."""
+        if await self.get(user_id, run_id) is None:
+            return False
+        if run_id in self._resuming:
+            raise RunBusy(run_id)
+        try:
+            snapshot = await self._runs.snapshot(run_id)
+        except UnknownRun:
+            raise RunBusy(run_id) from None  # not checkpointed yet: the graph is still starting
+        if derive_status(snapshot) in TERMINAL_STATUSES and not snapshot.next:
+            raise CannotCancel("the run has already finished")
+        if self._release_funds is not None and not await self._release_funds(run_id):
+            raise CannotCancel("committed funds could not be released")
+        await self._runs.cancel(run_id)
+        await self._set_status(run_id, "stopped")
+        return True
+
     async def events(self, user_id: str, run_id: str) -> AsyncIterator[str | None]:
         """Server-sent events: a ``run.snapshot`` frame now and whenever the view changes; ``None`` is a keep-alive
         tick. A snapshot per change keeps the stream stateless, so a reconnect needs no replay."""
@@ -225,6 +254,7 @@ class RunService:
             pass  # a concurrent observer stored the same question
 
     async def _set_status(self, run_id: str, status: str) -> None:
+        self._resuming.discard(run_id)
         async with session_scope(self._factory) as session:
             record = await session.get(RunRecord, run_id)
             if record is not None:
@@ -260,6 +290,7 @@ class RunService:
             ).scalar_one_or_none()
 
     def _spawn(self, record: RunRecord, new: NewRun) -> None:
+        self._resuming.add(record.run_id)
         task = asyncio.create_task(self._start(record.run_id, new), name=f"run-{record.run_id}")
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)

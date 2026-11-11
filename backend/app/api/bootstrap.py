@@ -32,15 +32,18 @@ from app.orchestrator.graph.runtime import RunController
 from app.orchestrator.guard.approval_guard import ApprovalError, approval_keys
 from app.payments.paypal.client import PayPalClient
 from app.payments.provider import ProviderError
+from app.payments.reconciliation import Reconciler
 from app.payments.service import PaymentService
 from app.runs.service import RunService
 from app.schemas.monitor import MonitorResult
 from app.workers.monitor import MonitorWorker
+from app.workers.reconciler import run_reconciler
 from app.workers.sweeper import run_sweeper
 
 logger = get_logger(__name__)
 
 SWEEP_INTERVAL_SECONDS = 300.0
+RECONCILE_INTERVAL_SECONDS = 600.0
 _TERMINAL_STATUSES = ("completed", "failed", "stopped", "cancelled")
 
 
@@ -124,30 +127,38 @@ async def open_runtime(
         audit_sink=writer, terms_for=ShoppingTerms(settings.paypal_payee_merchant_id), approval_keys=keys, provider=provider,
     )
     stop = asyncio.Event()
-    sweeper: asyncio.Task[None] | None = None
+    workers: list[asyncio.Task[None]] = []
     background: set[asyncio.Task[object]] = set()
     run_service: RunService | None = None
     try:
         async with open_checkpointer(settings) as checkpointer:
             runs = RunController(build_graph(deps, checkpointer))
             worker = MonitorWorker(runs, payments, factory, writer, keys, active_runs=active_run_ids(factory))
-            run_service = RunService(runs, factory, registry.connector_ids)
+            run_service = RunService(runs, factory, registry.connector_ids, release_funds=worker.release_for_cancel)
             app.state.paypal = paypal
             app.state.session_factory = factory
             app.state.runs = runs
             app.state.run_service = run_service
             app.state.monitor_dispatch = background_dispatch(worker, background)
-            sweeper = asyncio.create_task(
-                run_sweeper(worker, EventProcessor(runs.load_task), interval_seconds=SWEEP_INTERVAL_SECONDS, stop=stop),
-                name="deadline-sweeper",
+            workers.append(
+                asyncio.create_task(
+                    run_sweeper(worker, EventProcessor(runs.load_task), interval_seconds=SWEEP_INTERVAL_SECONDS, stop=stop),
+                    name="deadline-sweeper",
+                )
+            )
+            workers.append(
+                asyncio.create_task(
+                    run_reconciler(Reconciler(paypal, payments), factory, interval_seconds=RECONCILE_INTERVAL_SECONDS, stop=stop),
+                    name="payment-reconciler",
+                )
             )
             logger.info("runtime ready", extra={"platforms": sorted(registry.connector_ids)})
             yield
     finally:
         stop.set()
-        if sweeper is not None:
+        for task in workers:
             with suppress(asyncio.CancelledError):
-                await sweeper
+                await task
         await asyncio.gather(*background, return_exceptions=True)
         if run_service is not None:
             await run_service.aclose()

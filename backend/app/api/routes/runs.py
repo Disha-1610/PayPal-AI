@@ -12,7 +12,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.deps import Principal, get_principal, get_run_service
-from app.runs.service import InvalidCursor, NewRun, NotAwaiting, RunService
+from app.runs.service import CannotCancel, InvalidCursor, NewRun, NotAwaiting, RunBusy, RunService
 from app.runs.view import MessageView, RunPageView, RunView, run_view
 
 router = APIRouter(tags=["runs"])
@@ -108,6 +108,24 @@ async def payer_return(
     try:
         found = await service.payer_return(principal.user_id, run_id)
     except NotAwaiting as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    if not found:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
+    return Response(status_code=status.HTTP_202_ACCEPTED)
+
+
+@router.post("/runs/{run_id}/cancel", status_code=status.HTTP_202_ACCEPTED)
+async def cancel_run(
+    run_id: str,
+    principal: Annotated[Principal, Depends(get_principal)],
+    service: Annotated[RunService, Depends(get_run_service)],
+) -> Response:
+    """Cancel a paused run. Committed funds are released first; 409 if the run is busy, finished, or still holds money."""
+    try:
+        found = await service.cancel(principal.user_id, run_id)
+    except RunBusy as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, "the run is busy; try again in a moment") from exc
+    except CannotCancel as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     if not found:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
