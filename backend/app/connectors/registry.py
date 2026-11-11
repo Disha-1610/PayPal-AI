@@ -88,6 +88,10 @@ class ConnectorRegistry:
             raise ValueError(f"connector {connector.id!r} already registered")
         self._connectors[connector.id] = connector
 
+    @property
+    def connector_ids(self) -> frozenset[str]:
+        return frozenset(self._connectors)
+
     def scoped(self, auth: TaskAuthorization, domain: str | None = None) -> list[Connector]:
         """Registered connectors the task may use. The hard platform scope (2.2)."""
         return [

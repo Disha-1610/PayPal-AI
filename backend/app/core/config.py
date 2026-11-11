@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     paypal_base_url: str = "https://api-m.sandbox.paypal.com"  # live: https://api-m.paypal.com
     paypal_timeout_seconds: float = 15.0
     paypal_webhook_id: str | None = None  # webhook registered in the PayPal app; needed to verify signatures
+    paypal_payee_merchant_id: str | None = None  # merchant account that receives shopping payments (sandbox business account)
 
     channel3_api_key: SecretStr | None = None
     channel3_base_url: str = "https://api.trychannel3.com"

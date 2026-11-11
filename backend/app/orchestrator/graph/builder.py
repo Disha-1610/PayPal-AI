@@ -288,6 +288,7 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
         return {
             "order_id": order_id, "payment_id": str(placed.created.payment.id), "approval_url": placed.created.approval_url,
             "settle_attempt": 0, "status": "awaiting_payer",
+            "anchor_at": d.now(),  # the Monitor turns "within N days" into a date from here
         }
 
     def after_place_order(state: TaskState) -> str:

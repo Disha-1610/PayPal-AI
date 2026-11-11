@@ -3,11 +3,11 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.api.bootstrap import RuntimeConfigError, open_runtime
 from app.api.routes import approvals, runs, webhooks
 from app.audit.service import AuditWriter
 from app.core.config import settings
 from app.core.logging import get_logger, setup_logging
-from app.payments.paypal.client import PayPalClient
 
 setup_logging(settings.log_level)
 logger = get_logger(__name__)
@@ -15,18 +15,20 @@ logger = get_logger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Own the long-lived services. ``runs`` (RunController), ``authenticator`` and ``monitor_dispatch`` are
-    installed on ``app.state`` by the process that hosts the graph; absent ones make their routes fail closed."""
+    """Own the long-lived services. ``open_runtime`` installs the graph-backed services on ``app.state``;
+    ``authenticator`` is installed separately, and absent ones make their routes fail closed."""
     writer = AuditWriter()
     writer.start()
     app.state.audit_writer = writer
-    paypal = PayPalClient(settings) if settings.paypal_client_id else None
-    app.state.paypal = paypal
     try:
-        yield
+        try:
+            async with open_runtime(app, settings):
+                yield
+        except RuntimeConfigError as exc:
+            # Degraded start: routes that need the runtime answer 503 instead of guessing.
+            logger.error("runtime not started: %s", exc)
+            yield
     finally:
-        if paypal is not None:
-            await paypal.aclose()
         await writer.stop()
 
 
