@@ -1,9 +1,3 @@
-export interface HealthResponse {
-  status: string;
-  app: string;
-  environment: string;
-}
-
 export type ApprovalChoice = "approve" | "reject";
 
 export interface ApprovalDecision {

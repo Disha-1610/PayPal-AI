@@ -1,16 +1,11 @@
 import type {
   ApprovalDecision,
   ApprovalResponse,
-  HealthResponse,
   PayPalWebhookEvent,
   PayPalWebhookHeaders,
   WebhookResponse,
 } from "@/types/api";
 import { request } from "./client";
-
-export function getHealth(signal?: AbortSignal): Promise<HealthResponse> {
-  return request<HealthResponse>("/health", { signal });
-}
 
 /**
  * Submit a HITL approval/rejection. 409 means no pending approval or the terms
