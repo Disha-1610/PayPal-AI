@@ -1,4 +1,4 @@
-# PayPal-AI 
+# Aisling 
 
 > Integrate the PayPal developer platform with AI to build innovative applications.
 
@@ -57,10 +57,10 @@ Judges must be able to actually run or interact with a working build. Satisfy th
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/PayPal-AI.git
+git clone https://github.com/your-username/Aisling.git
 
 # Navigate to the project directory
-cd PayPal-AI
+cd Aisling
 
 # Install dependencies
 npm install

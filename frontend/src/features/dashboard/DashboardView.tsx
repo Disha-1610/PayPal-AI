@@ -50,7 +50,7 @@ export function DashboardView() {
           href="/runs/new"
           className="inline-flex items-center gap-2 rounded-lg bg-paypal-blue px-4 py-2 text-sm font-medium text-white hover:bg-paypal-darkblue"
         >
-          <PlusCircle className="h-4 w-4" aria-hidden /> New run
+          <PlusCircle className="h-4 w-4" aria-hidden /> New search
         </Link>
       </div>
 
@@ -61,7 +61,7 @@ export function DashboardView() {
             {spent.length === 0 ? "No payments yet" : spent.map((s) => formatMoney(s.amount, s.currency)).join(" + ")}
           </p>
           <p className="mt-1 text-sm text-slate-500">
-            {runs.length} {runs.length === 1 ? "run" : "runs"} in total
+            {runs.length} {runs.length === 1 ? "order" : "orders"} in total
           </p>
         </CardBody>
       </Card>
@@ -108,7 +108,7 @@ export function DashboardView() {
       ) : null}
 
       <section aria-labelledby="all-runs">
-        <h2 id="all-runs" className="mb-3 text-sm font-semibold text-slate-900">All runs</h2>
+        <h2 id="all-runs" className="mb-3 text-sm font-semibold text-slate-900">All orders</h2>
         {error ? (
           <p role="alert" className="mb-2 text-sm text-red-700">{error}</p>
         ) : null}

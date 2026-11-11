@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, type FormEvent, type ReactNode } from "react";
+import { useSearchParams } from "next/navigation";
 import { AlertTriangle, Loader2, Send } from "lucide-react";
 import { Card, CardBody, CardHeader } from "@/components/Card";
 import { useCreateRun } from "@/hooks/useCreateRun";
@@ -51,8 +52,18 @@ function Field({
   );
 }
 
+function initialValues(params: URLSearchParams): IntakeValues {
+  const domain = params.get("domain");
+  return {
+    ...INITIAL,
+    domain: DOMAINS.find((d) => d === domain) ?? INITIAL.domain,
+    goal: (params.get("goal") ?? "").slice(0, GOAL_MAX),
+  };
+}
+
 export function IntakeForm() {
-  const [values, setValues] = useState<IntakeValues>(INITIAL);
+  const searchParams = useSearchParams();
+  const [values, setValues] = useState<IntakeValues>(() => initialValues(searchParams));
   const [errors, setErrors] = useState<IntakeErrors>({});
   const { submit, submitting, error } = useCreateRun();
   const copy = DOMAIN_COPY[values.domain];
@@ -75,10 +86,10 @@ export function IntakeForm() {
   return (
     <Card>
       <CardHeader>
-        <h1 className="text-lg font-semibold text-slate-900">New task</h1>
+        <h1 className="text-lg font-semibold text-slate-900">What are you looking for?</h1>
         <p className="mt-0.5 text-sm text-slate-500">
-          Describe what you want. The agent searches, compares, negotiates where it can, and asks
-          for your approval before any payment.
+          Describe it and set your budget. We&apos;ll find and compare offers, and ask for your
+          approval before any payment.
         </p>
       </CardHeader>
       <CardBody>
@@ -89,7 +100,7 @@ export function IntakeForm() {
             hint={
               values.domain === "shopping"
                 ? undefined
-                : "Contractors and agents are in-app sandbox counterparties; payment runs on PayPal sandbox."
+                : "Payment is processed securely by PayPal after you approve."
             }
           >
             <select
@@ -108,7 +119,7 @@ export function IntakeForm() {
 
           <Field
             id="goal"
-            label={copy.goalLabel}
+            label={`${copy.goalLabel} (mention in details)`}
             hint={`${values.goal.length}/${GOAL_MAX}`}
             error={errors.goal}
           >
@@ -196,7 +207,7 @@ export function IntakeForm() {
             ) : (
               <Send className="h-4 w-4" aria-hidden />
             )}
-            Start task
+            Find offers
           </button>
         </form>
       </CardBody>

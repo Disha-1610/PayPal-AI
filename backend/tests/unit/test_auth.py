@@ -20,7 +20,7 @@ from app.core.config import Settings
 
 KEY = "s" * 32
 NOW = datetime(2026, 11, 11, tzinfo=UTC)
-ISSUER, AUDIENCE = "https://idp.test/", "paypal-ai"
+ISSUER, AUDIENCE = "https://idp.test/", "aisling"
 
 
 def codec(ttl=timedelta(hours=1)):
@@ -46,7 +46,7 @@ def test_bad_session_tokens_are_rejected(mutate):
         "expired": codec(timedelta(seconds=-60)).issue("u1")[0],
         "tampered": good[:-3] + ("AAA" if not good.endswith("AAA") else "BBB"),
         "wrong_key": SessionCodec("x" * 32, timedelta(hours=1)).issue("u1")[0],
-        "alg_none": jwt.encode({"sub": "u1", "sid": "s", "iss": "paypal-ai-sandbox", "exp": NOW + timedelta(days=9999)}, None, algorithm="none"),
+        "alg_none": jwt.encode({"sub": "u1", "sid": "s", "iss": "aisling-sandbox", "exp": NOW + timedelta(days=9999)}, None, algorithm="none"),
         "missing_claims": jwt.encode({"sub": "u1"}, KEY, algorithm="HS256"),
         "garbage": "not-a-token",
     }[mutate]

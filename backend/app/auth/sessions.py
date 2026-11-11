@@ -11,7 +11,7 @@ from app.api.deps import Principal
 
 COOKIE_NAME = "pp_session"
 _ALGORITHM = "HS256"
-_ISSUER = "paypal-ai-sandbox"
+_ISSUER = "aisling-sandbox"
 MIN_KEY_LENGTH = 32
 
 
