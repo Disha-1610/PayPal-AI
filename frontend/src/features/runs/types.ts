@@ -1,4 +1,5 @@
 import type { ApprovalRequest } from "@/features/approvals/types";
+import type { Candidate } from "@/features/candidates/types";
 
 export type RunStatus = "running" | "awaiting_approval" | "completed" | "failed" | "stopped";
 
@@ -37,5 +38,6 @@ export interface Run {
   max_iterations: number;
   /** Present only while `status` is "awaiting_approval". */
   pending_approval?: ApprovalRequest;
+  candidates?: Candidate[];
   steps: PlanStep[];
 }

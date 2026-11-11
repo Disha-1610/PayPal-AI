@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Card, CardBody, CardHeader } from "@/components/Card";
 import { ApprovalCard } from "@/features/approvals/ApprovalCard";
+import { CandidatesPanel } from "@/features/candidates/CandidatesPanel";
 import { PlanTimeline } from "@/features/plan/PlanTimeline";
 import { StepInspector } from "@/features/plan/StepInspector";
 import { RunSummary } from "./RunSummary";
@@ -20,6 +21,9 @@ export function RunDetailView({ run }: { run: Run }) {
       <RunSummary run={run} />
       {run.status === "awaiting_approval" && run.pending_approval ? (
         <ApprovalCard request={run.pending_approval} />
+      ) : null}
+      {run.candidates && run.candidates.length > 0 ? (
+        <CandidatesPanel candidates={run.candidates} />
       ) : null}
       <div className="grid gap-6 lg:grid-cols-5">
         <Card className="lg:col-span-2">
