@@ -5,6 +5,7 @@ import type {
   PayPalWebhookHeaders,
   WebhookResponse,
 } from "@/types/api";
+import type { CreateRunInput, CreateRunResponse } from "@/features/intake/types";
 import type { Run, RunPage } from "@/features/runs/types";
 import { ApiError, request } from "./client";
 
@@ -33,6 +34,25 @@ export async function listRuns(
   const page = await request<RunPage>(`/runs?${query}`, { signal });
   if (!page || !Array.isArray(page.items) || !page.items.every(isRun)) throw malformed("runs");
   return { items: page.items, next_cursor: page.next_cursor ?? null };
+}
+
+/**
+ * Start a run. The idempotency key makes a retried/double submit return the same run
+ * instead of creating a second task.
+ */
+export async function createRun(
+  input: CreateRunInput,
+  idempotencyKey: string,
+  signal?: AbortSignal,
+): Promise<CreateRunResponse> {
+  const response = await request<CreateRunResponse>("/runs", {
+    method: "POST",
+    body: input,
+    headers: { "Idempotency-Key": idempotencyKey },
+    signal,
+  });
+  if (!response || typeof response.run_id !== "string") throw malformed("create run");
+  return { run_id: response.run_id };
 }
 
 /** Fetch a single run. 404 means it does not exist or is not visible to the caller. */
