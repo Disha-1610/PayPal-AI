@@ -41,3 +41,9 @@ export interface Run {
   candidates?: Candidate[];
   steps: PlanStep[];
 }
+
+export interface RunPage {
+  items: Run[];
+  /** Opaque cursor for the next page; null when exhausted. */
+  next_cursor: string | null;
+}

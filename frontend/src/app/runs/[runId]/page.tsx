@@ -1,13 +1,9 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
-import { RunDetailView } from "@/features/runs/RunDetailView";
-import { getMockRun } from "@/features/runs/mock";
+import { RunDetailLoader } from "@/features/runs/RunDetailLoader";
 
 export default async function RunDetailPage({ params }: { params: Promise<{ runId: string }> }) {
   const { runId } = await params;
-  const run = getMockRun(runId);
-  if (!run) notFound();
 
   return (
     <div className="space-y-4">
@@ -17,7 +13,7 @@ export default async function RunDetailPage({ params }: { params: Promise<{ runI
       >
         <ArrowLeft className="h-4 w-4" aria-hidden /> All runs
       </Link>
-      <RunDetailView run={run} />
+      <RunDetailLoader runId={runId} />
     </div>
   );
 }

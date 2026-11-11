@@ -5,7 +5,42 @@ import type {
   PayPalWebhookHeaders,
   WebhookResponse,
 } from "@/types/api";
-import { request } from "./client";
+import type { Run, RunPage } from "@/features/runs/types";
+import { ApiError, request } from "./client";
+
+export interface ListRunsParams {
+  limit?: number;
+  cursor?: string | null;
+}
+
+function malformed(what: string): ApiError {
+  return new ApiError(502, `unexpected ${what} response`);
+}
+
+function isRun(value: unknown): value is Run {
+  if (typeof value !== "object" || value === null) return false;
+  const run = value as Partial<Run>;
+  return typeof run.id === "string" && typeof run.status === "string" && Array.isArray(run.steps);
+}
+
+/** List runs, newest first, one cursor page at a time. */
+export async function listRuns(
+  { limit = 20, cursor }: ListRunsParams = {},
+  signal?: AbortSignal,
+): Promise<RunPage> {
+  const query = new URLSearchParams({ limit: String(limit) });
+  if (cursor) query.set("cursor", cursor);
+  const page = await request<RunPage>(`/runs?${query}`, { signal });
+  if (!page || !Array.isArray(page.items) || !page.items.every(isRun)) throw malformed("runs");
+  return { items: page.items, next_cursor: page.next_cursor ?? null };
+}
+
+/** Fetch a single run. 404 means it does not exist or is not visible to the caller. */
+export async function getRun(runId: string, signal?: AbortSignal): Promise<Run> {
+  const run = await request<Run>(`/runs/${encodeURIComponent(runId)}`, { signal });
+  if (!isRun(run)) throw malformed("run");
+  return run;
+}
 
 /**
  * Submit a HITL approval/rejection. 409 means no pending approval or the terms
