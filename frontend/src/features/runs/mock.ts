@@ -14,6 +14,14 @@ export const MOCK_RUNS: readonly Run[] = [
     budget_usd: 350,
     iteration: 3,
     max_iterations: 10,
+    pending_approval: {
+      run_id: "run_demo_001",
+      item: "Dell S2725QC 27-inch 4K Monitor",
+      price_usd: 329.99,
+      seller: "Dell Official Store",
+      delivery_by: "2026-11-13T00:00:00Z",
+      terms_hash: "9f2c1ab47e03d6685b1c0a4f7d92e8135ac6f0b2d47e91c8a3f5b60d1e7c2a94",
+    },
     steps: [
       {
         id: "s1",

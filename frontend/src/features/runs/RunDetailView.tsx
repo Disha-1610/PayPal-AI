@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Card, CardBody, CardHeader } from "@/components/Card";
+import { ApprovalCard } from "@/features/approvals/ApprovalCard";
 import { PlanTimeline } from "@/features/plan/PlanTimeline";
 import { StepInspector } from "@/features/plan/StepInspector";
 import { RunSummary } from "./RunSummary";
@@ -17,6 +18,9 @@ export function RunDetailView({ run }: { run: Run }) {
   return (
     <div className="space-y-6">
       <RunSummary run={run} />
+      {run.status === "awaiting_approval" && run.pending_approval ? (
+        <ApprovalCard request={run.pending_approval} />
+      ) : null}
       <div className="grid gap-6 lg:grid-cols-5">
         <Card className="lg:col-span-2">
           <CardHeader>
