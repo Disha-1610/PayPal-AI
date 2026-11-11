@@ -60,12 +60,21 @@ A2A = DomainPlugin(
 
 
 def negotiation_envelope(
-    terms: ApprovalTerms, constraints: list[Constraint], *, non_negotiable_terms: dict[str, str] | None = None
+    terms: ApprovalTerms,
+    constraints: list[Constraint],
+    *,
+    non_negotiable_terms: dict[str, str] | None = None,
+    ceiling_field: str = "price_ceiling",
+    seller_party: str = "payee_id",
 ) -> NegotiationEnvelope:
-    """The user-approved bounds for an A2A deal: the user's ``price_ceiling`` caps any counter-offer.
-    Without an active ceiling the approved maximum applies, so the budget is never silently raised."""
-    ceilings = [c for c in constraints if c.active and c.field_name == "price_ceiling"]
+    """The user-approved bounds for a negotiated deal: the user's ceiling (``price_ceiling`` for A2A, ``budget``
+    for contractors) caps any counter-offer. Without an active ceiling the approved maximum applies, so the
+    budget is never silently raised, and a ceiling below the price the user already approved cannot shrink it."""
+    ceilings = [c for c in constraints if c.active and c.field_name == ceiling_field]
     ceiling = None
     if ceilings:
         ceiling = to_minor_units(min(Decimal(str(c.target_value)) for c in ceilings), terms.currency)
-    return envelope_from_terms(terms, max_total_minor=ceiling, non_negotiable_terms=non_negotiable_terms)
+        ceiling = max(ceiling, terms.expected_total_minor if terms.expected_total_minor is not None else terms.max_total_minor)
+    return envelope_from_terms(
+        terms, max_total_minor=ceiling, non_negotiable_terms=non_negotiable_terms, seller_party=seller_party
+    )

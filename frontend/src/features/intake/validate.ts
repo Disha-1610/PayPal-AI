@@ -1,4 +1,4 @@
-import type { CreateRunInput, IntakeErrors, IntakeValues } from "./types";
+import { DOMAIN_COPY, type CreateRunInput, type IntakeErrors, type IntakeValues } from "./types";
 
 export const GOAL_MIN = 10;
 export const GOAL_MAX = 1000;
@@ -15,7 +15,7 @@ export function validateIntake(
   const errors: IntakeErrors = {};
 
   const goal = values.goal.trim();
-  if (goal.length < GOAL_MIN) errors.goal = `Describe what to buy (at least ${GOAL_MIN} characters).`;
+  if (goal.length < GOAL_MIN) errors.goal = `Describe the task (at least ${GOAL_MIN} characters).`;
   else if (goal.length > GOAL_MAX) errors.goal = `Keep it under ${GOAL_MAX} characters.`;
 
   const maxSpend = Number(values.max_spend);
@@ -25,6 +25,8 @@ export function validateIntake(
 
   if (values.deliver_by && values.deliver_by < today) {
     errors.deliver_by = "Delivery date cannot be in the past.";
+  } else if (!values.deliver_by && DOMAIN_COPY[values.domain].deadlineRequired) {
+    errors.deliver_by = "Set the date the work must be completed by.";
   }
 
   if (Object.keys(errors).length > 0) return { ok: false, errors };
@@ -32,6 +34,7 @@ export function validateIntake(
   return {
     ok: true,
     input: {
+      domain: values.domain,
       goal,
       max_spend: Math.round(maxSpend * 100) / 100,
       currency: values.currency,

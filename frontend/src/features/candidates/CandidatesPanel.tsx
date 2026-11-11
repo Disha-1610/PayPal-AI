@@ -8,7 +8,7 @@ import { CandidateCard } from "./CandidateCard";
 import { CandidateCompare } from "./CandidateCompare";
 import type { Candidate } from "./types";
 
-export function CandidatesPanel({ candidates }: { candidates: readonly Candidate[] }) {
+export function CandidatesPanel({ candidates, currency }: { candidates: readonly Candidate[]; currency: string }) {
   const { selectedIds, toggle, clear, isFull } = useCandidateCompare();
 
   const viable = candidates.filter((c) => c.verdict === "viable").sort((a, b) => b.score - a.score);
@@ -37,6 +37,7 @@ export function CandidatesPanel({ candidates }: { candidates: readonly Candidate
                 <li key={c.id}>
                   <CandidateCard
                     candidate={c}
+                    currency={currency}
                     rank={i + 1}
                     selected={selectedIds.includes(c.id)}
                     selectDisabled={isFull}
@@ -58,7 +59,7 @@ export function CandidatesPanel({ candidates }: { candidates: readonly Candidate
                     Clear
                   </button>
                 </div>
-                <CandidateCompare items={selected} />
+                <CandidateCompare items={selected} currency={currency} />
               </section>
             ) : null}
 
@@ -70,7 +71,7 @@ export function CandidatesPanel({ candidates }: { candidates: readonly Candidate
                 <ul className="mt-3 space-y-2">
                   {rejected.map((c) => (
                     <li key={c.id}>
-                      <CandidateCard candidate={c} />
+                      <CandidateCard candidate={c} currency={currency} />
                     </li>
                   ))}
                 </ul>

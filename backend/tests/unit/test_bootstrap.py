@@ -55,7 +55,8 @@ async def test_full_runtime_compiles_the_real_graph_and_installs_services(tmp_pa
     async with open_runtime(app, complete(tmp_path), factory=factory):
         assert app.state.runs is not None and app.state.run_service is not None
         assert app.state.paypal is not None and app.state.monitor_dispatch is not None
-        assert app.state.run_service._platforms == {"channel3"}
+        assert app.state.run_service._platforms == {"channel3", "sandbox_contractors", "sandbox_agents"}
+        assert app.state.run_service._domains == {"shopping", "contractor", "a2a"}
 
 
 async def test_active_runs_exclude_finished_ones(factory):

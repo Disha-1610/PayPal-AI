@@ -12,7 +12,7 @@ talks to PayPal or decides verification itself. What this module adds is the mil
   * A failed milestone stays VOIDED/EXPIRED and blocks the rest; recovery or renegotiation goes back
     through Adapt and a new approved plan.
 
-The contractor's observer/evidence source must echo ``domain_data`` (plan hash, sequence, criteria hash)
+The contractor's observer/evidence source must echo ``domain_data`` (plan hash, sequence, criteria hash, run id)
 and report the milestone amount and completion date; anything else fails the shared mismatch check.
 
 This is milestone-based authorization and capture, not escrow: PayPal holds the authorization, it does
@@ -69,7 +69,9 @@ def terms_for(row: Milestone) -> ApprovalTerms:
         expected_total_minor=minor,
         latest_acceptable_at=_aware(row.due_date),
         permissions=frozenset({_PERMISSION}),
-        domain_data={"plan_hash": row.plan_hash, "sequence": row.sequence, "criteria_hash": _criteria_hash(row)},
+        domain_data={
+            "plan_hash": row.plan_hash, "sequence": row.sequence, "criteria_hash": _criteria_hash(row), "run_id": row.run_id,
+        },
     )
 
 

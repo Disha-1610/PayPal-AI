@@ -13,6 +13,7 @@ from operator import add
 from typing import Annotated, TypedDict
 
 from app.orchestrator.guard.constraint_guard import assert_revision_allowed
+from app.domains.contractor.schemas import MilestonePlan
 from app.schemas.adapt import AdaptProgress, RelaxationProposal
 from app.schemas.authorization import Approval, PendingApproval, TaskAuthorization
 from app.schemas.candidate import Candidate
@@ -63,6 +64,7 @@ class TaskState(TypedDict, total=False):
     run_id: Annotated[str, keep_first]
     original_intent: Annotated[str, keep_first]
     authorization: Annotated[TaskAuthorization, keep_first]
+    deliver_by: Annotated[datetime | None, keep_first]  # hard deadline the user set at intake (negotiating domains)
 
     # --- aggregated history ---
     constraints: Annotated[list[Constraint], merge_constraints]
@@ -97,6 +99,8 @@ class TaskState(TypedDict, total=False):
     approval_url: str | None  # where the payer approves at the provider
     settle_attempt: int  # verification attempts so far
     stop_reason: str  # why the task ended early (set by stop_report)
+    milestone_plan: MilestonePlan | None  # the contractor's proposed plan; stored only once the user approves its hash
+    milestone_seq: int  # the milestone in flight (1-based); 0 = the plan itself / none
 
 
 STATE_FIELDS = frozenset(TaskState.__annotations__)
@@ -108,11 +112,13 @@ def make_initial_state(
     original_intent: str,
     authorization: TaskAuthorization,
     constraints: list[Constraint] | None = None,
+    domain: str | None = None,
+    deliver_by: datetime | None = None,
 ) -> TaskState:
     if authorization.run_id != run_id:
         raise ValueError("authorization.run_id does not match run_id")
     initial = constraints or []
-    return TaskState(
+    state = TaskState(
         state_version=STATE_VERSION,
         run_id=run_id,
         original_intent=original_intent,
@@ -123,6 +129,11 @@ def make_initial_state(
         errors=[],
         status="created",
     )
+    if domain is not None:
+        state["domain"] = domain
+    if deliver_by is not None:
+        state["deliver_by"] = deliver_by
+    return state
 
 
 def validate_state_update(node: str, update: dict[str, object], writable: frozenset[str]) -> None:

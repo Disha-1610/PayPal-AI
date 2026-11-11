@@ -2,6 +2,7 @@ import type { ApprovalRequest } from "@/features/approvals/types";
 import type { PaymentInfo } from "@/features/payment/types";
 import type { ChatMessage } from "@/features/chat/types";
 import type { Candidate } from "@/features/candidates/types";
+import type { Milestone } from "@/features/milestones/types";
 
 export type RunStatus =
   | "running"
@@ -47,20 +48,30 @@ export interface PlanStep {
 export interface Run {
   id: string;
   goal: string;
+  /** Task type: "shopping", "contractor" or "a2a". */
+  domain?: string;
   status: RunStatus;
   created_at: string;
   updated_at: string;
   budget_usd: number;
+  /** ISO 4217 code every amount on the run (budget, prices, approval) is in. */
+  currency: string;
   iteration: number;
   max_iterations: number;
   /** Present only while `status` is "awaiting_approval". */
   pending_approval?: ApprovalRequest;
   candidates?: Candidate[];
+  /** Contractor runs: the milestone plan and each milestone's progress. */
+  milestones?: Milestone[];
   messages?: ChatMessage[];
   payment?: PaymentInfo;
   /** Why the run ended early; set when `status` is "stopped" or "failed". */
   stop_reason?: string;
   steps: PlanStep[];
+  /** ISO delivery date the user set or approved. */
+  promised_by?: string;
+  /** ISO date the counterparty now says delivery will happen; present only after a revision. */
+  expected_by?: string;
 }
 
 export interface RunPage {

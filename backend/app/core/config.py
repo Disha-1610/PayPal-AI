@@ -18,7 +18,10 @@ class Settings(BaseSettings):
     llm_provider: str = "gemini"
     llm_model: str = "gemini-2.5-flash"
     llm_api_key: SecretStr | None = None
-    llm_timeout_seconds: float = 30.0
+    llm_timeout_seconds: float = 12.0  # per attempt; structured extraction/scoring answers are short
+    llm_thinking_budget: int = 0  # Gemini 2.5 thinking tokens; 0 disables thinking (big latency win), -1 = model decides
+    llm_temperature: float = 0.0
+    run_llm_budget_seconds: float = 90.0  # LLM time per graph invocation; once spent, agents use their code-only path (0 = unlimited)
 
     approval_signing_key: SecretStr | None = None  # HMAC key for user approvals; required to issue/verify
     approval_key_id: str = "v1"  # recorded on each approval so the key can be rotated
@@ -45,6 +48,9 @@ class Settings(BaseSettings):
     channel3_country: str | None = None  # e.g. "US"; Channel3 infers defaults when unset
     channel3_currency: str | None = None  # e.g. "USD"
     channel3_timeout_seconds: float = 10.0
+
+    # In-app sandbox contractors and remote agents, so contractor and A2A runs have a counterparty (like PayPal sandbox).
+    sandbox_counterparties_enabled: bool = True
 
     @property
     def cors_origin_list(self) -> list[str]:

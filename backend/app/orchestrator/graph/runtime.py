@@ -11,6 +11,8 @@ from typing import Any
 
 from langgraph.types import Command
 
+from app.core.config import get_settings
+from app.llm.deadline import llm_budget
 from app.orchestrator.agents.negotiator.offer import parse_counter_offer
 from app.schemas.authorization import PendingApproval
 from app.schemas.monitor import TaskView
@@ -35,16 +37,35 @@ class NotNegotiable(RuntimeError):
 
 
 class RunController:
-    def __init__(self, graph: Any) -> None:
+    """``graph`` serves every run whose domain has no entry in ``by_domain``. Every graph must come from
+    ``build_graph`` (same nodes and edges, different dependencies), so reads can use any of them; writes and
+    invocations use the run's own domain graph, chosen from the ``domain`` held in its checkpointed state."""
+
+    def __init__(self, graph: Any, *, by_domain: Mapping[str, Any] | None = None) -> None:
         self._graph = graph
+        self._by_domain = dict(by_domain or {})
 
     @staticmethod
     def _config(run_id: str) -> dict[str, Any]:
         return {"configurable": {"thread_id": run_id}}
 
+    def _for_domain(self, domain: str | None) -> Any:
+        return self._by_domain.get(domain or "", self._graph)
+
+    async def _graph_of(self, run_id: str) -> Any:
+        if not self._by_domain:
+            return self._graph
+        snapshot = await self._graph.aget_state(self._config(run_id))
+        return self._for_domain(snapshot.values.get("domain") if snapshot.values else None)
+
+    async def _invoke(self, graph: Any, payload: Any, config: dict[str, Any]) -> TaskState:
+        """One graph invocation with its LLM time budget; past it, agents fall back to their code-only path."""
+        with llm_budget(get_settings().run_llm_budget_seconds):
+            return await graph.ainvoke(payload, config)
+
     async def start(self, initial: TaskState) -> TaskState:
         """Run a new task until it finishes or pauses at an interrupt."""
-        return await self._graph.ainvoke(initial, self._config(initial["run_id"]))
+        return await self._invoke(self._for_domain(initial.get("domain")), initial, self._config(initial["run_id"]))
 
     async def snapshot(self, run_id: str) -> RunSnapshot:
         snap = await self._graph.aget_state(self._config(run_id))
@@ -73,8 +94,9 @@ class RunController:
 
     async def replan(self, run_id: str) -> TaskState:
         """Re-enter the graph at ``monitor_intake`` (-> Adapt), abandoning whatever the run was paused on."""
-        await self._graph.aupdate_state(self._config(run_id), {}, as_node="monitor_intake")
-        return await self._graph.ainvoke(None, self._config(run_id))
+        graph = await self._graph_of(run_id)
+        await graph.aupdate_state(self._config(run_id), {}, as_node="monitor_intake")
+        return await self._invoke(graph, None, self._config(run_id))
 
     async def receive_counter_offer(self, run_id: str, raw: Mapping[str, object]) -> TaskState:
         """A counterparty's counter-offer. It is sanitized into structured fields first (``ValidationError`` rejects the
@@ -86,14 +108,15 @@ class RunController:
             return await self.resume(run_id, dict(raw))
         if snapshot.next or not snapshot.values.get("approvals"):
             raise NotNegotiable(run_id)
-        await self._graph.aupdate_state(self._config(run_id), {"incoming_offer": offer}, as_node="negotiation_intake")
-        return await self._graph.ainvoke(None, self._config(run_id))
+        graph = await self._graph_of(run_id)
+        await graph.aupdate_state(self._config(run_id), {"incoming_offer": offer}, as_node="negotiation_intake")
+        return await self._invoke(graph, None, self._config(run_id))
 
     async def cancel(self, run_id: str) -> TaskState:
         """End a paused run at the user's request: the graph finishes through ``stop_report`` with status ``cancelled``
         and any pending approval is withdrawn, so nothing can still be approved or resumed. Funds are released by the
         caller first (``MonitorWorker.release_for_cancel``); this only closes the run."""
-        await self._graph.aupdate_state(
+        await (await self._graph_of(run_id)).aupdate_state(
             self._config(run_id),
             {"status": "cancelled", "stop_reason": "cancelled by the user", "pending_approval": None},
             as_node="stop_report",
@@ -101,7 +124,7 @@ class RunController:
         return await self.state(run_id)
 
     async def set_status(self, run_id: str, status: str) -> None:
-        await self._graph.aupdate_state(self._config(run_id), {"status": status})
+        await (await self._graph_of(run_id)).aupdate_state(self._config(run_id), {"status": status})
 
     async def resume(self, run_id: str, value: object) -> TaskState:
-        return await self._graph.ainvoke(Command(resume=value), self._config(run_id))
+        return await self._invoke(await self._graph_of(run_id), Command(resume=value), self._config(run_id))

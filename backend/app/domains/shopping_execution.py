@@ -11,6 +11,7 @@ can never widen scope. Nothing here trusts connector text; only typed, numeric a
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -18,15 +19,20 @@ from app.connectors.base import ConnectorError
 from app.connectors.base.models import CandidateRequest
 from app.connectors.registry import ConnectorRegistry
 from app.core.logging import get_logger
+from app.domains.base import DomainPlugin
 from app.monitor.events.deadline import resolve_deadline
 from app.monitor.events.store import applied_rows, latest_by_entity
 from app.schemas.approval_terms import ApprovalTerms, from_minor_units, to_minor_units
 from app.schemas.authorization import Action, TaskAuthorization
 from app.schemas.candidate import Candidate
-from app.schemas.monitor import TaskView
+from app.schemas.monitor import Problem, TaskView
 from app.schemas.recheck import ObservedTerms
 from app.schemas.state import TaskState
 from app.schemas.verification import Evidence
+
+
+class TermsObserver(Protocol):
+    async def observe(self, terms: ApprovalTerms) -> ObservedTerms: ...
 
 logger = get_logger(__name__)
 
@@ -117,8 +123,27 @@ class MonitorEventEvidence:
     DELIVERED confirms and its timestamp is the delivery date (a late one fails the deadline check); a failed
     delivery or return rejects; anything else is "not yet confirmed" and the executor keeps waiting, then voids."""
 
-    def __init__(self, observer: ConnectorTermsObserver, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        observer: TermsObserver,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        confirmed_types: frozenset[str] = frozenset({"DELIVERED"}),
+        failed_types: frozenset[str] = _FAILED,
+    ) -> None:
         self._observer, self._factory = observer, session_factory
+        self._confirmed, self._failed = confirmed_types, failed_types
+
+    @classmethod
+    def for_plugin(
+        cls, plugin: DomainPlugin, observer: TermsObserver, session_factory: async_sessionmaker[AsyncSession]
+    ) -> "MonitorEventEvidence":
+        """Evidence read through a domain's ``MonitorSpec``: its completion events confirm, its work-rejected and
+        non-delivery events reject."""
+        failed = frozenset(
+            r.event_type for r in plugin.monitor.rules if r.problem in (Problem.WORK_REJECTED, Problem.NON_DELIVERY)
+        )
+        return cls(observer, session_factory, confirmed_types=plugin.monitor.completed_event_types, failed_types=failed)
 
     async def collect(self, terms: ApprovalTerms, order_id: str) -> Evidence:
         run_id = str(terms.domain_data["run_id"])
@@ -126,10 +151,10 @@ class MonitorEventEvidence:
             latest = latest_by_entity(await applied_rows(session, run_id, order_id)).get(order_id)
         observed = await self._observer.observe(terms)
         confirmed: bool | None = None
-        if latest is not None and latest.event_type == "DELIVERED":
+        if latest is not None and latest.event_type in self._confirmed:
             confirmed = True
             delivered_at = latest.occurred_at if latest.occurred_at.tzinfo else latest.occurred_at.replace(tzinfo=UTC)
             observed = observed.model_copy(update={"available_by": delivered_at})
-        elif latest is not None and latest.event_type in _FAILED:
+        elif latest is not None and latest.event_type in self._failed:
             confirmed = False
         return Evidence(source="monitor_events", observed=observed, confirmed=confirmed)

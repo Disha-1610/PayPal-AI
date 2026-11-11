@@ -100,9 +100,13 @@ def edges_into(target: str) -> set[str]:
 
 def test_every_path_into_evaluator_executor_and_payment_goes_through_a_guard():
     assert "guard_evaluate" in edges_into("evaluate")
-    assert edges_into("recheck") == {"guard_execute"}
+    assert edges_into("recheck") == {"guard_execute", "propose_plan"}
+    assert edges_into("propose_plan") == {"guard_execute"}  # milestone domains: plan first, then the same recheck
     assert edges_into("place_order") == {"guard_pay"}
+    assert edges_into("milestone_pay") == {"guard_pay"}
+    assert edges_into("milestone_create") == {"guard_plan"}
     assert edges_into("guard_pay") == {"await_approval"}
+    assert edges_into("guard_plan") == {"await_approval"}
     assert "discovery_finish" not in edges_into("evaluate")
 
 

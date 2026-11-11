@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 import pytest
 from pydantic import BaseModel
@@ -73,3 +74,23 @@ async def test_missing_api_key_raises_gateway_error(monkeypatch):
     monkeypatch.setattr(gateway.get_settings(), "llm_api_key", None)
     with pytest.raises(LLMGatewayError):
         await call("q", Out)
+
+
+async def test_spent_budget_refuses_call_without_touching_provider():
+    from app.llm.deadline import llm_budget
+
+    p = FakeProvider('{"answer": 1}')
+    with llm_budget(0.001):
+        time.sleep(0.05)  # real elapsed time; monotonic ticks ~15ms on Windows
+        with pytest.raises(LLMGatewayError, match="budget"):
+            await call("q", Out, provider=p)
+    assert p.prompts == []
+
+
+async def test_budget_is_scoped_to_its_block():
+    from app.llm.deadline import llm_budget, remaining
+
+    with llm_budget(5):
+        assert remaining() is not None and remaining() > 0
+    assert remaining() is None
+    assert (await call("q", Out, provider=FakeProvider('{"answer": 3}'))).answer == 3

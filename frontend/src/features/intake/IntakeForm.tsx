@@ -5,10 +5,18 @@ import { AlertTriangle, Loader2, Send } from "lucide-react";
 import { Card, CardBody, CardHeader } from "@/components/Card";
 import { useCreateRun } from "@/hooks/useCreateRun";
 import { cn } from "@/lib/utils";
-import { CURRENCIES, type Currency, type IntakeErrors, type IntakeValues } from "./types";
+import {
+  CURRENCIES,
+  DOMAIN_COPY,
+  DOMAINS,
+  type Currency,
+  type Domain,
+  type IntakeErrors,
+  type IntakeValues,
+} from "./types";
 import { GOAL_MAX, validateIntake } from "./validate";
 
-const INITIAL: IntakeValues = { goal: "", max_spend: "", currency: "USD", deliver_by: "" };
+const INITIAL: IntakeValues = { domain: "shopping", goal: "", max_spend: "", currency: "USD", deliver_by: "" };
 
 const INPUT =
   "w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-paypal-lightblue focus:outline-none focus:ring-1 focus:ring-paypal-lightblue";
@@ -47,6 +55,7 @@ export function IntakeForm() {
   const [values, setValues] = useState<IntakeValues>(INITIAL);
   const [errors, setErrors] = useState<IntakeErrors>({});
   const { submit, submitting, error } = useCreateRun();
+  const copy = DOMAIN_COPY[values.domain];
 
   function set<K extends keyof IntakeValues>(key: K, value: IntakeValues[K]) {
     setValues((prev) => ({ ...prev, [key]: value }));
@@ -66,17 +75,40 @@ export function IntakeForm() {
   return (
     <Card>
       <CardHeader>
-        <h1 className="text-lg font-semibold text-slate-900">New shopping task</h1>
+        <h1 className="text-lg font-semibold text-slate-900">New task</h1>
         <p className="mt-0.5 text-sm text-slate-500">
-          Describe what you want. The agent searches, compares, and asks for your approval before
-          any payment.
+          Describe what you want. The agent searches, compares, negotiates where it can, and asks
+          for your approval before any payment.
         </p>
       </CardHeader>
       <CardBody>
         <form onSubmit={onSubmit} noValidate className="space-y-5">
           <Field
+            id="domain"
+            label="Task type"
+            hint={
+              values.domain === "shopping"
+                ? undefined
+                : "Contractors and agents are in-app sandbox counterparties; payment runs on PayPal sandbox."
+            }
+          >
+            <select
+              id="domain"
+              value={values.domain}
+              onChange={(e) => set("domain", e.target.value as Domain)}
+              className={INPUT}
+            >
+              {DOMAINS.map((d) => (
+                <option key={d} value={d}>
+                  {DOMAIN_COPY[d].label}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          <Field
             id="goal"
-            label="What should I buy?"
+            label={copy.goalLabel}
             hint={`${values.goal.length}/${GOAL_MAX}`}
             error={errors.goal}
           >
@@ -88,7 +120,7 @@ export function IntakeForm() {
               onChange={(e) => set("goal", e.target.value)}
               aria-invalid={Boolean(errors.goal)}
               aria-describedby={errors.goal ? "goal-error" : undefined}
-              placeholder="A 27-inch 4K monitor, USB-C preferred, delivered by Friday"
+              placeholder={copy.placeholder}
               className={INPUT}
             />
           </Field>
@@ -133,7 +165,7 @@ export function IntakeForm() {
 
           <Field
             id="deliver_by"
-            label="Deliver by (optional)"
+            label={copy.deadlineLabel}
             error={errors.deliver_by}
           >
             <input

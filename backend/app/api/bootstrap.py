@@ -7,6 +7,7 @@ absent; the caller decides whether to run degraded (routes that need the runtime
 import asyncio
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager, suppress
+from dataclasses import replace
 
 from fastapi import FastAPI
 from sqlalchemy import select
@@ -21,13 +22,22 @@ from app.core.logging import get_logger
 from app.db.models.run import RunRecord
 from app.db.repositories.connector_text import SqlTextSource, SqlTextStore
 from app.db.session import SessionFactory
+from app.domains.a2a import A2A
+from app.domains.contractor import CONTRACTOR
+from app.domains.contractor.milestone import MilestoneService
+from app.domains.engagement import EngagementTerms, PlanTerms, engagement_envelope
 from app.domains.shopping import SHOPPING
-from app.domains.shopping_execution import ConnectorTermsObserver, MonitorEventEvidence, ShoppingTerms
+from app.domains.shopping_execution import (
+    ConnectorTermsObserver,
+    MonitorEventEvidence,
+    ShoppingTerms,
+)
 from app.llm.providers import LLMError, build_provider
 from app.monitor.events.processor import EventProcessor
 from app.orchestrator.executor.executor import Executor
 from app.orchestrator.graph.builder import GraphDeps, build_graph
 from app.orchestrator.graph.checkpointer import open_checkpointer
+from app.orchestrator.graph.milestones import MilestoneFlow
 from app.orchestrator.graph.runtime import RunController
 from app.orchestrator.guard.approval_guard import ApprovalError, approval_keys
 from app.payments.paypal.client import PayPalClient
@@ -35,6 +45,14 @@ from app.payments.provider import ProviderError
 from app.payments.reconciliation import Reconciler
 from app.payments.service import PaymentService
 from app.runs.service import RunService
+from app.sandbox.catalog import AGENT_SOURCE, CONTRACTOR_SOURCE, OFFERINGS
+from app.sandbox.counterparty import (
+    QuotedTermsObserver,
+    SandboxConnector,
+    SandboxCounterparty,
+    SandboxMilestoneObserver,
+    SandboxMilestonePlanner,
+)
 from app.schemas.monitor import MonitorResult
 from app.workers.monitor import MonitorWorker
 from app.workers.reconciler import run_reconciler
@@ -126,15 +144,50 @@ async def open_runtime(
         plugin=SHOPPING, registry=registry, text_source=SqlTextSource(factory), executor=executor, session_factory=factory,
         audit_sink=writer, terms_for=ShoppingTerms(settings.paypal_payee_merchant_id), approval_keys=keys, provider=provider,
     )
+    counterparty: SandboxCounterparty | None = None
+    engagement_deps: dict[str, GraphDeps] = {}
+    if settings.sandbox_counterparties_enabled:
+        payee = settings.paypal_payee_merchant_id
+        counterparty = SandboxCounterparty(factory)
+        quoted = QuotedTermsObserver(observer, counterparty)
+        registry.register(SandboxConnector(CONTRACTOR_SOURCE, CONTRACTOR.name, OFFERINGS))
+        registry.register(SandboxConnector(AGENT_SOURCE, A2A.name, OFFERINGS))
+        # Contractor: a milestone plan; each milestone is approved, paid, verified and captured on its own.
+        milestone_observer = SandboxMilestoneObserver()
+        milestone_evidence = MonitorEventEvidence.for_plugin(CONTRACTOR, milestone_observer, factory)
+        engagement_deps[CONTRACTOR.name] = replace(
+            deps, plugin=CONTRACTOR, executor=Executor(payments, quoted, MonitorEventEvidence(quoted, factory), CONTRACTOR.verification),
+            terms_for=PlanTerms(EngagementTerms(payee, permission="engage_contractor")),
+            milestones=MilestoneFlow(
+                planner=SandboxMilestonePlanner(payee),
+                service=MilestoneService(Executor(payments, milestone_observer, milestone_evidence, CONTRACTOR.verification), writer),
+            ),
+            before_settle=counterparty.fulfilment(CONTRACTOR),
+        )
+        # A2A: one payment for the whole deal; a failed delivery is renegotiated inside the user's ceiling.
+        engagement_deps[A2A.name] = replace(
+            deps, plugin=A2A, executor=Executor(payments, quoted, MonitorEventEvidence.for_plugin(A2A, quoted, factory), A2A.verification),
+            terms_for=EngagementTerms(payee, permission="delegate_task"),
+            envelope_for=engagement_envelope("price_ceiling"), counterparty=counterparty,
+            before_settle=counterparty.fulfilment(A2A),
+        )
     stop = asyncio.Event()
     workers: list[asyncio.Task[None]] = []
     background: set[asyncio.Task[object]] = set()
     run_service: RunService | None = None
     try:
         async with open_checkpointer(settings) as checkpointer:
-            runs = RunController(build_graph(deps, checkpointer))
+            runs = RunController(
+                build_graph(deps, checkpointer),
+                by_domain={name: build_graph(d, checkpointer) for name, d in engagement_deps.items()},
+            )
+            if counterparty is not None:
+                counterparty.bind(runs)
             worker = MonitorWorker(runs, payments, factory, writer, keys, active_runs=active_run_ids(factory))
-            run_service = RunService(runs, factory, registry.connector_ids, release_funds=worker.release_for_cancel)
+            run_service = RunService(
+                runs, factory, registry.connector_ids, release_funds=worker.release_for_cancel,
+                domains=frozenset({SHOPPING.name, *engagement_deps}),
+            )
             app.state.paypal = paypal
             app.state.session_factory = factory
             app.state.runs = runs
@@ -152,7 +205,9 @@ async def open_runtime(
                     name="payment-reconciler",
                 )
             )
-            logger.info("runtime ready", extra={"platforms": sorted(registry.connector_ids)})
+            logger.info(
+                "runtime ready", extra={"platforms": sorted(registry.connector_ids), "domains": sorted({SHOPPING.name, *engagement_deps})}
+            )
             yield
     finally:
         stop.set()
@@ -162,4 +217,6 @@ async def open_runtime(
         await asyncio.gather(*background, return_exceptions=True)
         if run_service is not None:
             await run_service.aclose()
+        if counterparty is not None:
+            await counterparty.aclose()
         await paypal.aclose()

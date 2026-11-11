@@ -31,7 +31,3 @@ export function formatMoney(amount: number, currency: string): string {
     return `${amount.toFixed(2)} ${currency}`; // unknown/invalid currency code
   }
 }
-
-export function formatUsd(amount: number): string {
-  return formatMoney(amount, "USD");
-}

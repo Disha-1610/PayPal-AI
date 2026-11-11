@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 import { ApprovalTerms } from "./ApprovalTerms";
 import type { ApprovalRequest } from "./types";
 
-export function ApprovalCard({ request }: { request: ApprovalRequest }) {
+export function ApprovalCard({ request, currency }: { request: ApprovalRequest; currency: string }) {
   const { state, submit } = useApproval(request);
   const submitting = state.phase === "submitting";
   const locked = submitting || state.phase === "resolved" || state.phase === "stale";
@@ -21,7 +21,7 @@ export function ApprovalCard({ request }: { request: ApprovalRequest }) {
         </p>
       </CardHeader>
       <CardBody className="space-y-4">
-        <ApprovalTerms request={request} />
+        <ApprovalTerms request={request} currency={currency} />
 
         {state.phase === "resolved" ? (
           <p role="status" className="flex items-center gap-2 text-sm text-slate-700">

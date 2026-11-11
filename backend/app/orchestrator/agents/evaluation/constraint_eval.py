@@ -6,7 +6,7 @@ from app.schemas.candidate import Candidate, DataQuality
 from app.schemas.constraints import MEMBERSHIP_OPERATORS, RANGE_OPERATORS, Constraint, Operator
 
 # Constraint field name -> Candidate core field, where the two differ.
-_CORE_ALIASES = {"budget": "total_cost"}
+_CORE_ALIASES = {"budget": "total_cost", "price_ceiling": "total_cost"}
 _CORE_FIELDS = frozenset({"total_cost", "rating", "review_count", "complaint_count", "return_window_days"})
 _UNUSABLE = frozenset({DataQuality.MISSING, DataQuality.UNRELIABLE})
 

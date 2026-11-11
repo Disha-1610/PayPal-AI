@@ -11,9 +11,11 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from app.db.models.milestone import Milestone
 from app.db.models.payment import Payment
 from app.db.models.run import RunRecord
 from app.db.models.run_message import RunMessage
+from app.domains.contractor.schemas import MilestonePlan
 from app.orchestrator.graph.runtime import RunSnapshot
 from app.orchestrator.router.limits import GraphLimits
 from app.schemas.approval_terms import from_minor_units
@@ -65,6 +67,15 @@ class CandidateView(BaseModel):
     rejection_reason: str | None = None
 
 
+class MilestoneView(BaseModel):
+    sequence: int
+    description: str  # from the approved plan; bounded (512) and shown as plain text
+    amount: float
+    currency: str
+    due_by: str
+    status: str  # proposed | pending | order_placed | settled | voided | expired
+
+
 class MessageView(BaseModel):
     id: str
     role: str
@@ -87,10 +98,12 @@ class PaymentView(BaseModel):
 class RunView(BaseModel):
     id: str
     goal: str
+    domain: str = "shopping"
     status: RunStatus
     created_at: datetime
     updated_at: datetime
-    budget_usd: float
+    budget_usd: float  # the budget in the run's currency; the name is the frontend contract
+    currency: str
     iteration: int = 0
     max_iterations: int = 0
     pending_approval: ApprovalView | None = None
@@ -99,6 +112,9 @@ class RunView(BaseModel):
     payment: PaymentView | None = None
     stop_reason: str | None = None
     steps: list[PlanStepView] = []
+    promised_by: datetime | None = None  # the delivery date the user set / approved
+    milestones: list[MilestoneView] | None = None  # contractor runs: the plan, with each milestone's progress
+    expected_by: datetime | None = None  # the counterparty's latest revised date, when it slipped
 
 
 class RunPageView(BaseModel):
@@ -167,6 +183,27 @@ def candidate_views(candidates: Sequence[Candidate], report: EvaluationReport | 
     return sorted(views, key=lambda v: (v.verdict != "viable", -v.score))
 
 
+def milestone_views(rows: Sequence[Milestone], plan: MilestonePlan | None) -> list[MilestoneView] | None:
+    """Stored milestones once the plan is approved; before that, the proposed plan. None when there is neither."""
+    if rows:
+        return [
+            MilestoneView(
+                sequence=r.sequence, description=r.description, amount=float(r.amount), currency=r.currency,
+                due_by=_day(r.due_date if r.due_date.tzinfo else r.due_date.replace(tzinfo=UTC)), status=r.status,
+            )
+            for r in sorted(rows, key=lambda r: r.sequence)
+        ]
+    if plan is None:
+        return None
+    return [
+        MilestoneView(
+            sequence=index, description=m.description, amount=float(m.amount), currency=plan.currency, due_by=_day(m.due_date),
+            status="proposed",
+        )
+        for index, m in enumerate(plan.milestones, start=1)
+    ]
+
+
 def payment_view(payment: Payment, approval_url: str | None) -> PaymentView:
     return PaymentView(
         status=payment.status, amount=float(payment.amount), currency=payment.currency, order_id=payment.order_id,
@@ -213,22 +250,30 @@ def run_view(
     payment: Payment | None = None,
     messages: Sequence[RunMessage] = (),
     max_cycles: int = GraphLimits().max_cycles,
+    expected_by: datetime | None = None,
+    milestones: Sequence[Milestone] = (),
 ) -> RunView:
     """The run as the client sees it. Without a snapshot (graph not checkpointed yet) only the index row is known."""
     base = dict(
-        id=record.run_id, goal=record.goal, created_at=record.created_at, updated_at=record.updated_at,
-        budget_usd=float(record.max_spend), messages=[message_view(m) for m in messages],
+        id=record.run_id, goal=record.goal, domain=record.domain or "shopping", created_at=record.created_at, updated_at=record.updated_at,
+        budget_usd=float(record.max_spend), currency=record.currency, messages=[message_view(m) for m in messages],
+        promised_by=record.deliver_by, expected_by=expected_by,
     )
     if snapshot is None:
-        return RunView(status=client_status(record.status), **base)
+        return RunView(
+            status=client_status(record.status),
+            payment=payment_view(payment, None) if payment else None, **base,
+        )
     state = snapshot.values
     status = derive_status(snapshot)
     pending = state.get("pending_approval")
+    if pending is not None:
+        base["promised_by"] = pending.terms.latest_acceptable_at or record.deliver_by
     return RunView(
         status=status, iteration=state.get("cycles", 0), max_iterations=max_cycles,
         pending_approval=approval_view(record.run_id, pending) if pending and status == "awaiting_approval" else None,
         candidates=candidate_views(state.get("candidates", []), state.get("evaluation")),
         payment=payment_view(payment, state.get("approval_url")) if payment else None,
         stop_reason=state.get("stop_reason") if status in {"stopped", "failed"} else None,
-        steps=plan_steps(state, status), **base,
+        steps=plan_steps(state, status), milestones=milestone_views(milestones, state.get("milestone_plan")), **base,
     )

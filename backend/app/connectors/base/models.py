@@ -21,6 +21,7 @@ class SearchRequest(_Model):
     domain: str
     filters: dict[str, AttributeValue] = Field(default_factory=dict)
     limit: int = Field(default=10, ge=1, le=50)
+    currency: str | None = Field(default=None, min_length=3, max_length=3, description="The run's currency, for sources that price in several")
 
 
 class CandidateRequest(_Model):

@@ -1,19 +1,26 @@
 """Run routes: create (idempotent), list (cursor-paginated, newest first) and fetch. Every query is scoped to the
 authenticated user; a run that is not yours is a 404, the same as one that does not exist."""
 
+from collections.abc import AsyncIterator
 from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Literal
 
-from collections.abc import AsyncIterator
-
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.api.deps import Principal, get_principal, get_run_service
-from app.runs.service import CannotCancel, InvalidCursor, NewRun, NotAwaiting, RunBusy, RunService
-from app.runs.view import MessageView, RunPageView, RunView, run_view
+from app.runs.service import (
+    CannotCancel,
+    InvalidCursor,
+    NewRun,
+    NotAwaiting,
+    RunBusy,
+    RunService,
+    UnsupportedDomain,
+)
+from app.runs.view import MessageView, RunPageView, RunView
 
 router = APIRouter(tags=["runs"])
 _KEEP_ALIVE = ": keep-alive\n\n"  # an SSE comment; keeps proxies from closing an idle stream
@@ -26,6 +33,13 @@ class CreateRunBody(BaseModel):
     max_spend: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
     currency: Literal["USD", "INR"]
     deliver_by: datetime | None = None
+    domain: Literal["shopping", "contractor", "a2a"] = "shopping"
+
+    @model_validator(mode="after")
+    def _deadline_for_engagements(self) -> "CreateRunBody":
+        if self.domain != "shopping" and self.deliver_by is None:
+            raise ValueError("deliver_by is required for contractor and a2a runs: it is the hard completion deadline")
+        return self
 
 
 class CreateRunResponse(BaseModel):
@@ -39,10 +53,15 @@ async def create_run(
     service: Annotated[RunService, Depends(get_run_service)],
     idempotency_key: Annotated[str, Header(min_length=8, max_length=128)],
 ) -> CreateRunResponse:
-    record = await service.create(
-        principal.user_id, idempotency_key,
-        NewRun(goal=body.goal, max_spend=body.max_spend, currency=body.currency, deliver_by=body.deliver_by),
-    )
+    try:
+        record = await service.create(
+            principal.user_id, idempotency_key,
+            NewRun(
+                goal=body.goal, max_spend=body.max_spend, currency=body.currency, deliver_by=body.deliver_by, domain=body.domain
+            ),
+        )
+    except UnsupportedDomain as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     return CreateRunResponse(run_id=record.run_id)
 
 
@@ -54,10 +73,10 @@ async def list_runs(
     cursor: str | None = None,
 ) -> RunPageView:
     try:
-        page = await service.list(principal.user_id, limit=limit, cursor=cursor)
+        items, next_cursor = await service.list_views(principal.user_id, limit=limit, cursor=cursor)
     except InvalidCursor as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid cursor") from exc
-    return RunPageView(items=[run_view(r) for r in page.items], next_cursor=page.next_cursor)
+    return RunPageView(items=items, next_cursor=next_cursor)
 
 
 @router.get("/runs/{run_id}", response_model=RunView, response_model_exclude_none=True)

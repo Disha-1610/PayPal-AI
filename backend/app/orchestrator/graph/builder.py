@@ -17,7 +17,7 @@ runs inside ``settle`` through the Executor, so there is no separate verifier no
 Monitor events enter at ``monitor_intake`` (see ``workers.monitor``), which hands the task back to Adapt.
 """
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -48,6 +48,18 @@ from app.orchestrator.agents.intent.agent import extract_intent, to_state_update
 from app.orchestrator.executor.executor import ExecutionBlocked, Executor
 from app.orchestrator.executor.state import ExecutionState
 from app.orchestrator.graph.approval import await_approval_node, request_approval_node
+from app.orchestrator.graph.milestones import (
+    STATUS_COMPLETED,
+    STATUS_MILESTONE_READY,
+    STATUS_PLAN_CREATED,
+    STATUS_PLAN_PROPOSED,
+    MilestoneFlow,
+    create_plan_step,
+    next_milestone_step,
+    pay_milestone_step,
+    propose_plan_step,
+    settle_milestone_step,
+)
 from app.orchestrator.graph.negotiation import (
     STATUS_NEGOTIATING,
     CounterpartyChannel,
@@ -57,6 +69,7 @@ from app.orchestrator.graph.negotiation import (
     send_counter_step,
 )
 from app.orchestrator.graph.stop import stop_report_node
+from app.orchestrator.graph.timing import timed
 from app.orchestrator.guard.approval_guard import signed_approval_verifier
 from app.orchestrator.guard.graph_guard import (
     GUARD_BLOCKED,
@@ -110,6 +123,11 @@ class GraphDeps:
     envelope_for: EnvelopeFor | None = None
     counterparty: CounterpartyChannel | None = None
     negotiator_policy: NegotiatorPolicy = field(default_factory=NegotiatorPolicy)
+    # Milestone engagements (contractor): plan proposal + per-milestone approval, payment and verification.
+    milestones: MilestoneFlow | None = None
+    # In-process counterparties (sandbox) report fulfilment here, before settlement opens its transaction.
+    # Real counterparties report through webhooks and leave this unset.
+    before_settle: Callable[[TaskState], Awaitable[None]] | None = None
 
 
 def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None) -> Any:
@@ -124,8 +142,10 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
         return next(c for c in state.get("candidates", []) if c.candidate_id == wanted)
 
     def permit_for(state: TaskState, terms: ApprovalTerms) -> PaymentPermit:
-        approvals = tuple(state.get("approvals", []))
-        approved = approvals[-1]  # all approvals of one user decision share user, session and terms
+        history = state.get("approvals", [])
+        approved = history[-1]  # all approvals of one user decision share user, session and terms
+        # Only the latest decision's approvals: an earlier one (a plan, or a deal later renegotiated) is for other terms.
+        approvals = tuple(a for a in history if a.terms_hash == approved.terms_hash and a.session_id == approved.session_id)
         verifier = signed_approval_verifier(
             current_terms=terms, keys=d.approval_keys, run_id=state["run_id"], session_id=approved.session_id or "",
             approved_by=approved.approved_by,
@@ -282,7 +302,11 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
         return request_approval_node(state, audit=scope(state))
 
     def after_approval(state: TaskState) -> str:
-        return "guard_pay" if state.get("status") == "approved" else "stop_report"
+        if state.get("status") != "approved":
+            return "stop_report"
+        if d.milestones is not None and not state.get("milestone_seq"):
+            return "guard_plan"  # the user approved the whole plan; each milestone is approved and paid on its own
+        return "guard_pay"
 
     async def place_order(state: TaskState) -> dict[str, object]:
         terms = state["approvals"][-1].terms
@@ -317,6 +341,10 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
         return {"status": "payer_returned"}
 
     async def settle(state: TaskState) -> dict[str, object]:
+        if d.before_settle is not None:
+            await d.before_settle(state)
+        if d.milestones is not None and state.get("milestone_seq"):
+            return await settle_milestone_step(state, flow=d.milestones, session_factory=d.session_factory, permit_for=permit_for)
         terms = state["approvals"][-1].terms
         assert terms is not None
         attempt = state.get("settle_attempt", 0) + 1
@@ -333,6 +361,12 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
 
     def after_settle(state: TaskState) -> str:
         status = state.get("status")
+        if d.milestones is not None and state.get("milestone_seq"):
+            return {
+                "payer_pending": "await_payer", ExecutionState.SETTLED.value: "milestone_next",
+                ExecutionState.VOIDED.value: "milestone_next", ExecutionState.EXPIRED.value: "milestone_next",
+                ExecutionState.AWAITING_CONFIRMATION.value: END,
+            }.get(status or "", "stop_report")
         if status == "payer_pending":
             return "await_payer"  # the payer has not approved yet: pause again (PaymentNotReady is safe to retry)
         if status == "payment_refused":
@@ -349,7 +383,44 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
         return d.plugin.negotiates and d.envelope_for is not None and bool(state.get("approvals"))
 
     def guard_negotiate(state: TaskState) -> dict[str, object]:
+        if d.envelope_for is None:  # this domain's runtime does not negotiate (e.g. fixed milestone plans)
+            return {"status": GUARD_BLOCKED, "errors": ["guard blocked negotiation: not available for this task"]}
         return guard_negotiation(state, now=d.now(), audit=scope(state))
+
+    # ---- milestones (contractor): plan -> approve plan -> per milestone: approve -> pay -> verify -> capture ----------
+
+    def flow() -> MilestoneFlow:
+        if d.milestones is None:
+            raise RuntimeError("milestone node reached in a domain without a milestone flow")
+        return d.milestones
+
+    async def propose_plan(state: TaskState) -> dict[str, object]:
+        return await propose_plan_step(state, candidate(state), flow=flow(), audit=scope(state))
+
+    def after_propose_plan(state: TaskState) -> str:
+        return "recheck" if state.get("status") == STATUS_PLAN_PROPOSED else "stop_report"
+
+    async def milestone_create(state: TaskState) -> dict[str, object]:
+        return await create_plan_step(state, flow=flow(), session_factory=d.session_factory)
+
+    def after_milestone_create(state: TaskState) -> str:
+        return "milestone_next" if state.get("status") == STATUS_PLAN_CREATED else "stop_report"
+
+    async def milestone_next(state: TaskState) -> dict[str, object]:
+        return await next_milestone_step(
+            state, candidate(state), flow=flow(), session_factory=d.session_factory, audit=scope(state)
+        )
+
+    def after_milestone_next(state: TaskState) -> str:
+        routes = {STATUS_MILESTONE_READY: "request_approval", STATUS_COMPLETED: END}
+        return routes.get(state.get("status", ""), "stop_report")
+
+    async def milestone_pay(state: TaskState) -> dict[str, object]:
+        result = await pay_milestone_step(state, flow=flow(), session_factory=d.session_factory, permit_for=permit_for)
+        return {**result, "anchor_at": d.now()} if result.get("status") == "awaiting_payer" else result
+
+    def after_milestone_pay(state: TaskState) -> str:
+        return "await_payer" if state.get("status") == "awaiting_payer" else "stop_report"
 
     async def negotiate(state: TaskState) -> dict[str, object]:
         assert d.envelope_for is not None  # can_negotiate / the intake guard it
@@ -398,8 +469,11 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
         "monitor_intake": monitor_intake, "guard_negotiate": guard_negotiate, "negotiate": negotiate,
         "send_counter": send_counter, "await_counterparty": await_counterparty, "negotiation_intake": negotiation_intake,
         "guard_evaluate": guard_evaluate, "guard_execute": guard_execute, "guard_pay": guard_pay, "stop_report": stop_report,
+        "propose_plan": propose_plan, "guard_plan": guard_pay, "milestone_create": milestone_create,
+        "milestone_next": milestone_next, "milestone_pay": milestone_pay,
     }.items():
-        graph.add_node(name, node)
+        # Interrupt nodes wait on a human/counterparty, so their duration is not compute time.
+        graph.add_node(name, node if name.startswith("await_") else timed(name, node))
 
     graph.add_edge(START, "intent")
     graph.add_conditional_edges("intent", after_intent, ["discovery_start", "adapt", "stop_report"])
@@ -414,16 +488,27 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
     graph.add_conditional_edges("coordinator", after_coordinator, ["discovery_start", "switch_candidate", "adapt", "stop_report"])
     graph.add_edge("select", "guard_execute")
     graph.add_conditional_edges("switch_candidate", after_switch, ["guard_execute", "stop_report"])
-    graph.add_conditional_edges("guard_execute", guarded("recheck"), ["recheck", "stop_report"])
+    graph.add_conditional_edges(
+        "guard_execute", guarded("propose_plan" if d.milestones else "recheck"), ["propose_plan", "recheck", "stop_report"]
+    )
+    graph.add_conditional_edges("propose_plan", after_propose_plan, ["recheck", "stop_report"])
     graph.add_conditional_edges("recheck", after_recheck, ["request_approval", "evaluate", "adapt"])
     graph.add_edge("request_approval", "await_approval")
-    graph.add_conditional_edges("await_approval", after_approval, ["guard_pay", "stop_report"])
-    graph.add_conditional_edges("guard_pay", guarded("place_order"), ["place_order", "stop_report"])
+    graph.add_conditional_edges("await_approval", after_approval, ["guard_pay", "guard_plan", "stop_report"])
+    graph.add_conditional_edges(
+        "guard_pay", guarded("milestone_pay" if d.milestones else "place_order"), ["place_order", "milestone_pay", "stop_report"]
+    )
+    graph.add_conditional_edges("guard_plan", guarded("milestone_create"), ["milestone_create", "stop_report"])
+    graph.add_conditional_edges("milestone_create", after_milestone_create, ["milestone_next", "stop_report"])
+    graph.add_conditional_edges("milestone_next", after_milestone_next, ["request_approval", "stop_report", END])
+    graph.add_conditional_edges("milestone_pay", after_milestone_pay, ["await_payer", "stop_report"])
     graph.add_edge("stop_report", END)
     graph.add_conditional_edges("place_order", after_place_order, ["await_payer", "evaluate", "adapt"])
     graph.add_edge("await_payer", "settle")
     graph.add_edge("monitor_intake", "adapt")
-    graph.add_conditional_edges("settle", after_settle, ["await_payer", "adapt", "discovery_start", "guard_negotiate", END])
+    graph.add_conditional_edges(
+        "settle", after_settle, ["await_payer", "adapt", "discovery_start", "guard_negotiate", "milestone_next", "stop_report", END]
+    )
     graph.add_conditional_edges("guard_negotiate", guarded("negotiate"), ["negotiate", "stop_report"])
     graph.add_conditional_edges("negotiate", after_negotiate, ["request_approval", "send_counter", "stop_report"])
     graph.add_conditional_edges("send_counter", after_send_counter, ["await_counterparty", "stop_report"])

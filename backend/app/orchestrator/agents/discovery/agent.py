@@ -13,6 +13,8 @@ Platforms are searched one at a time with an authorization narrowed to that plat
 The LLM only proposes query text (see ``rewrite``) and never takes part in routing.
 """
 
+import asyncio
+
 from app.audit.events import AuditScope, Phase
 from app.connectors.base import Capability
 from app.connectors.registry import ConnectorRegistry
@@ -76,7 +78,9 @@ async def discovery_search_node(
     platform = platforms[progress.platform_index]
     platform_auth = auth.model_copy(update={"permitted_platforms": frozenset({platform})})
     plan = progress.plan or initial_plan(state.get("goal", ""), constraints, plugin)
-    request = build_search_request(plan, constraints, plugin, limit=policy.search_limit)
+    request = build_search_request(plan, constraints, plugin, limit=policy.search_limit).model_copy(
+        update={"currency": auth.currency}
+    )
     result = await registry.search_resilient(platform_auth, request, max_attempts=policy.max_search_attempts, audit=audit)
     errors = list(result.errors)
 
@@ -86,11 +90,17 @@ async def discovery_search_node(
     for candidate in found:  # dedupe by (source, id); an already-enriched record is richer, keep it
         if _key(candidate) not in enriched:
             pool[_key(candidate)] = candidate
-    for candidate in [c for c in found if _key(c) not in enriched][: policy.enrich_top_n]:
-        updated = await enrich_candidate(
-            registry, platform_auth, candidate, destination=destination, reviews_limit=policy.reviews_limit,
-            errors=errors, audit=audit,
+    to_enrich = [c for c in found if _key(c) not in enriched][: policy.enrich_top_n]
+    enriched_records = await asyncio.gather(  # independent candidates: enrich concurrently, results keep input order
+        *(
+            enrich_candidate(
+                registry, platform_auth, candidate, destination=destination, reviews_limit=policy.reviews_limit,
+                errors=errors, audit=audit,
+            )
+            for candidate in to_enrich
         )
+    )
+    for candidate, updated in zip(to_enrich, enriched_records, strict=True):
         enriched.add(_key(candidate))
         if updated is None:
             pool.pop(_key(candidate), None)

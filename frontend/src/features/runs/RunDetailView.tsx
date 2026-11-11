@@ -7,6 +7,7 @@ import { ConnectionBadge } from "@/components/ConnectionBadge";
 import { useRunState } from "@/hooks/useRunState";
 import { ApprovalCard } from "@/features/approvals/ApprovalCard";
 import { CandidatesPanel } from "@/features/candidates/CandidatesPanel";
+import { MilestonesPanel } from "@/features/milestones/MilestonesPanel";
 import { OutcomeSummary } from "@/features/payment/OutcomeSummary";
 import { PaymentStatusCard } from "@/features/payment/PaymentStatusCard";
 import { PlanTimeline } from "@/features/plan/PlanTimeline";
@@ -33,11 +34,12 @@ export function RunDetailView({ run: initialRun }: { run: Run }) {
         <PaymentStatusCard payment={run.payment} awaitingPayer={run.status === "awaiting_payment"} />
       ) : null}
       {run.status === "awaiting_approval" && run.pending_approval ? (
-        <ApprovalCard key={run.pending_approval.terms_hash} request={run.pending_approval} />
+        <ApprovalCard key={run.pending_approval.terms_hash} request={run.pending_approval} currency={run.currency} />
       ) : null}
+      {run.milestones && run.milestones.length > 0 ? <MilestonesPanel milestones={run.milestones} /> : null}
       <ChatPanel runId={run.id} status={run.status} messages={run.messages ?? []} />
       {run.candidates && run.candidates.length > 0 ? (
-        <CandidatesPanel candidates={run.candidates} />
+        <CandidatesPanel candidates={run.candidates} currency={run.currency} />
       ) : null}
       <div className="grid gap-6 lg:grid-cols-5">
         <Card className="lg:col-span-2">

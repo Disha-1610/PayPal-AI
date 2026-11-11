@@ -8,11 +8,14 @@ export function AppShell({ children }: { children: ReactNode }) {
     <div className="min-h-screen">
       <header className="border-b border-slate-200 bg-paypal-blue text-white">
         <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4">
-          <Link href="/runs" className="flex items-center gap-2 font-semibold">
+          <Link href="/dashboard" className="flex items-center gap-2 font-semibold">
             <ShoppingBag className="h-5 w-5 text-paypal-yellow" aria-hidden />
             PayPal AI
           </Link>
-          <nav aria-label="Primary" className="text-sm">
+          <nav aria-label="Primary" className="flex gap-1 text-sm">
+            <Link href="/dashboard" className="rounded px-3 py-1.5 hover:bg-white/10">
+              Dashboard
+            </Link>
             <Link href="/runs" className="rounded px-3 py-1.5 hover:bg-white/10">
               Runs
             </Link>

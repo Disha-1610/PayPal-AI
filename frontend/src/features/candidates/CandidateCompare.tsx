@@ -1,4 +1,4 @@
-import { formatUsd } from "@/lib/utils";
+import { formatMoney } from "@/lib/utils";
 import type { Candidate } from "./types";
 
 const date = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: "UTC" });
@@ -10,7 +10,7 @@ function formatDate(iso: string): string {
 
 interface Row {
   label: string;
-  render: (c: Candidate) => string;
+  render: (c: Candidate, currency: string) => string;
   /** Returns the id(s) of the best candidate for highlighting. */
   best?: (items: readonly Candidate[]) => string;
 }
@@ -18,7 +18,7 @@ interface Row {
 const ROWS: readonly Row[] = [
   {
     label: "Price",
-    render: (c) => formatUsd(c.price_usd),
+    render: (c, currency) => formatMoney(c.price_usd, currency),
     best: (items) => items.reduce((a, b) => (b.price_usd < a.price_usd ? b : a)).id,
   },
   {
@@ -41,7 +41,7 @@ const ROWS: readonly Row[] = [
   },
 ];
 
-export function CandidateCompare({ items }: { items: readonly Candidate[] }) {
+export function CandidateCompare({ items, currency }: { items: readonly Candidate[]; currency: string }) {
   if (items.length < 2) {
     return (
       <p className="text-sm text-slate-500">Select at least two candidates to compare them.</p>
@@ -80,7 +80,7 @@ export function CandidateCompare({ items }: { items: readonly Candidate[] }) {
                         : "px-3 py-2 text-slate-900"
                     }
                   >
-                    {row.render(c)}
+                    {row.render(c, currency)}
                   </td>
                 ))}
               </tr>

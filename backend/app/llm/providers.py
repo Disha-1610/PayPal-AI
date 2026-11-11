@@ -39,10 +39,12 @@ _TRANSIENT_HTTP_CODES = {408, 429, 500, 502, 503, 504}
 class GeminiProvider:
     name = "gemini"
 
-    def __init__(self, api_key: str, model: str) -> None:
+    def __init__(self, api_key: str, model: str, *, thinking_budget: int = 0, temperature: float = 0.0) -> None:
         from google import genai  # imported lazily so other providers don't need the SDK
 
         self.model = model
+        self._thinking_budget = thinking_budget
+        self._temperature = temperature
         self._client = genai.Client(api_key=api_key)
 
     async def generate(self, prompt: str, output_model: type[BaseModel]) -> LLMResponse:
@@ -55,6 +57,8 @@ class GeminiProvider:
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=output_model,
+                    temperature=self._temperature,
+                    thinking_config=types.ThinkingConfig(thinking_budget=self._thinking_budget),
                 ),
             )
         except errors.APIError as exc:
@@ -78,5 +82,10 @@ def build_provider(settings: Settings) -> LLMProvider:
         raise LLMError("LLM_API_KEY is not configured")
     key = settings.llm_api_key.get_secret_value()
     if settings.llm_provider == "gemini":
-        return GeminiProvider(api_key=key, model=settings.llm_model)
+        return GeminiProvider(
+            api_key=key,
+            model=settings.llm_model,
+            thinking_budget=settings.llm_thinking_budget,
+            temperature=settings.llm_temperature,
+        )
     raise LLMError(f"Unsupported LLM provider: {settings.llm_provider!r}")

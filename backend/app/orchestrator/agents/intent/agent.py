@@ -272,11 +272,14 @@ def apply_patch(ops: list[IntentPatchOp], current: list[Constraint], plugin: Dom
 async def _call_checked[M: BaseModel, R](
     prompt: str, model: type[M], check: Callable[[M], R], provider: LLMProvider | None
 ) -> R:
-    """Call the gateway, run ``check`` on the output, and retry once with the rejection reason."""
+    """Call the gateway, run ``check`` on the output, and retry once with the rejection reason.
+
+    The gateway gets a single transport retry so the two retry layers cannot stack to minutes.
+    """
     current = prompt
     reason = ""
     for _ in range(2):
-        output = await call(current, model, provider=provider)
+        output = await call(current, model, retries=1, provider=provider)
         try:
             return check(output)
         except _Rejected as exc:

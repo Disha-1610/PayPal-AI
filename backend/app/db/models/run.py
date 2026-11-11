@@ -18,6 +18,7 @@ class RunRecord(Base):
     user_id: Mapped[str] = mapped_column(String(128), nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
     goal: Mapped[str] = mapped_column(String(2000), nullable=False)
+    domain: Mapped[str] = mapped_column(String(32), default="shopping", server_default="shopping", nullable=False)
     max_spend: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
     deliver_by: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

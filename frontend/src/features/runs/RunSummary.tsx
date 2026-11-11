@@ -1,5 +1,5 @@
 import { Card, CardBody } from "@/components/Card";
-import { formatDateTime, formatUsd } from "@/lib/utils";
+import { formatDateTime, formatMoney } from "@/lib/utils";
 import { CancelRunButton } from "./CancelRunButton";
 import { RunStatusBadge } from "./RunStatusBadge";
 import type { Run } from "./types";
@@ -25,7 +25,7 @@ export function RunSummary({ run }: { run: Run }) {
           <CancelRunButton run={run} />
         </div>
         <dl className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
-          <Stat label="Budget" value={formatUsd(run.budget_usd)} />
+          <Stat label="Budget" value={formatMoney(run.budget_usd, run.currency)} />
           <Stat label="Iteration" value={`${run.iteration} / ${run.max_iterations}`} />
           <Stat label="Started" value={formatDateTime(run.created_at)} />
           <Stat label="Updated" value={formatDateTime(run.updated_at)} />

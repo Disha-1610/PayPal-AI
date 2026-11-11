@@ -1,4 +1,4 @@
-import { formatUsd } from "@/lib/utils";
+import { formatMoney } from "@/lib/utils";
 import type { ApprovalRequest } from "./types";
 
 const date = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: "UTC" });
@@ -12,12 +12,12 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function ApprovalTerms({ request }: { request: ApprovalRequest }) {
+export function ApprovalTerms({ request, currency }: { request: ApprovalRequest; currency: string }) {
   const delivery = new Date(request.delivery_by);
   return (
     <dl className="divide-y divide-slate-100 rounded-lg border border-slate-200">
       <Row label="Item" value={request.item} />
-      <Row label="Price" value={formatUsd(request.price_usd)} />
+      <Row label="Price" value={formatMoney(request.price_usd, currency)} />
       <Row label="Seller" value={request.seller} />
       <Row
         label="Delivery by"

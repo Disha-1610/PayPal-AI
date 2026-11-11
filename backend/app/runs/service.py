@@ -7,7 +7,7 @@ import binascii
 import hashlib
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -16,13 +16,26 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.logging import get_logger
+from app.db.models.milestone import Milestone
+from app.db.models.monitor import MonitorEventRecord
 from app.db.models.payment import Payment
 from app.db.models.run import RunRecord
 from app.db.models.run_message import RunMessage
 from app.db.session import session_scope
+from app.domains import get_plugin
+from app.monitor.events.deadline import InvalidEvent, parse_instant
 from app.orchestrator.graph.runtime import RunController, RunSnapshot, UnknownRun
-from app.runs.view import TERMINAL_STATUSES, MessageView, derive_status, RunView, message_view, question_text, run_view
+from app.runs.view import (
+    TERMINAL_STATUSES,
+    MessageView,
+    RunView,
+    derive_status,
+    message_view,
+    question_text,
+    run_view,
+)
 from app.schemas.authorization import Action, TaskAuthorization
+from app.schemas.monitor import Problem
 from app.schemas.state import make_initial_state
 
 logger = get_logger(__name__)
@@ -36,7 +49,22 @@ _GRANTED_ACTIONS = frozenset(
         Action.VOID_PAYMENT, Action.REQUEST_REFUND,
     }
 )
+_NEGOTIATION_ACTIONS = frozenset({Action.NEGOTIATE})  # granted only to domains whose plug-in negotiates
 _AUTHORIZATION_TTL = timedelta(days=7)
+_END_OF_DAY = time(23, 59, 59, tzinfo=UTC)
+
+
+def deadline_of(deliver_by: datetime | None) -> datetime | None:
+    """The hard deadline as a timezone-aware instant. A bare date (no zone) means the end of that day in UTC."""
+    if deliver_by is None:
+        return None
+    if deliver_by.tzinfo is None:
+        return datetime.combine(deliver_by.date(), _END_OF_DAY)
+    return deliver_by
+
+
+def granted_actions(domain: str) -> frozenset[Action]:
+    return _GRANTED_ACTIONS | _NEGOTIATION_ACTIONS if get_plugin(domain).negotiates else _GRANTED_ACTIONS
 
 
 class InvalidCursor(ValueError):
@@ -51,6 +79,10 @@ class CannotCancel(Exception):
     """The run is already finished, or its committed funds could not be released (so it must stay open)."""
 
 
+class UnsupportedDomain(Exception):
+    """This deployment has no runtime for the requested domain."""
+
+
 class NotAwaiting(Exception):
     """The run is not paused where this action applies (not asking a question / not waiting for the payer)."""
 
@@ -61,6 +93,7 @@ class NewRun:
     max_spend: Decimal
     currency: str
     deliver_by: datetime | None = None
+    domain: str = "shopping"
 
 
 @dataclass(frozen=True)
@@ -98,20 +131,25 @@ class RunService:
         session_factory: async_sessionmaker[AsyncSession],
         platforms: frozenset[str],
         release_funds: Callable[[str], Awaitable[bool]] | None = None,
+        *,
+        domains: frozenset[str] = frozenset({"shopping"}),
     ) -> None:
         self._runs, self._factory, self._platforms = runs, session_factory, platforms
+        self._domains = domains
         self._release_funds = release_funds  # releases committed money before a cancel; None: nothing to release
         self._tasks: set[asyncio.Task[None]] = set()
         self._resuming: set[str] = set()  # runs with a resume in flight: a second one would re-run the paused node
 
     async def create(self, user_id: str, idempotency_key: str, new: NewRun) -> RunRecord:
         """Create the run and start it in the background. A repeated key returns the original run."""
+        if new.domain not in self._domains:
+            raise UnsupportedDomain(f"domain {new.domain!r} is not available; available: {sorted(self._domains)}")
         existing = await self._by_key(user_id, idempotency_key)
         if existing is not None:
             return existing
         record = RunRecord(
-            run_id=uuid4().hex, user_id=user_id, idempotency_key=idempotency_key, goal=new.goal.strip(),
-            max_spend=new.max_spend, currency=new.currency, deliver_by=new.deliver_by, status="created",
+            run_id=uuid4().hex, user_id=user_id, idempotency_key=idempotency_key, goal=new.goal.strip(), domain=new.domain,
+            max_spend=new.max_spend, currency=new.currency, deliver_by=deadline_of(new.deliver_by), status="created",
         )
         try:
             async with session_scope(self._factory) as session:
@@ -143,6 +181,50 @@ class RunService:
         page = rows[:limit]
         return RunPage(page, encode_cursor(page[-1]) if len(rows) > limit else None)
 
+    async def list_views(self, user_id: str, *, limit: int, cursor: str | None) -> tuple[list[RunView], str | None]:
+        """One page of runs as the client sees them, with each run's payment and revised delivery date.
+        Both are loaded for the whole page in one query each."""
+        page = await self.list(user_id, limit=limit, cursor=cursor)
+        run_ids = [r.run_id for r in page.items]
+        async with self._factory() as session:
+            payments = await self._latest_payments(session, run_ids)
+            expected = await self._expected_by(session, run_ids)
+        views = [run_view(r, payment=payments.get(r.run_id), expected_by=expected.get(r.run_id)) for r in page.items]
+        return views, page.next_cursor
+
+    @staticmethod
+    async def _latest_payments(session: AsyncSession, run_ids: list[str]) -> dict[str, Payment]:
+        if not run_ids:
+            return {}
+        rows = (
+            await session.execute(select(Payment).where(Payment.run_id.in_(run_ids)).order_by(Payment.created_at))
+        ).scalars()
+        return {p.run_id: p for p in rows}  # ascending order: the newest payment wins
+
+    @staticmethod
+    async def _expected_by(session: AsyncSession, run_ids: list[str]) -> dict[str, datetime]:
+        """The counterparty's most recent revised delivery date per run (from applied deadline-risk events)."""
+        if not run_ids:
+            return {}
+        rows = (
+            await session.execute(
+                select(MonitorEventRecord)
+                .where(
+                    MonitorEventRecord.run_id.in_(run_ids),
+                    MonitorEventRecord.status == "applied",
+                    MonitorEventRecord.problem == Problem.DEADLINE_RISK.value,
+                )
+                .order_by(MonitorEventRecord.occurred_at, MonitorEventRecord.rank)
+            )
+        ).scalars()
+        result: dict[str, datetime] = {}
+        for row in rows:  # ascending: the latest event wins
+            try:
+                result[row.run_id] = parse_instant((row.payload or {}).get("new_date"))
+            except InvalidEvent:
+                logger.warning("deadline event has no valid new_date", extra={"run_id": row.run_id})
+        return result
+
     async def aclose(self) -> None:
         """Wait for in-flight starts so a shutdown does not abandon a run mid-step (it resumes from its checkpoint)."""
         if self._tasks:
@@ -167,7 +249,9 @@ class RunService:
             messages = list((await session.execute(query)).scalars())
             payment_id = snapshot.values.get("payment_id") if snapshot else None
             payment = await session.get(Payment, UUID(payment_id)) if payment_id else None
-        view = run_view(record, snapshot, payment=payment, messages=messages)
+            expected_by = (await self._expected_by(session, [run_id])).get(run_id)
+            milestones = list((await session.execute(select(Milestone).where(Milestone.run_id == run_id))).scalars())
+        view = run_view(record, snapshot, payment=payment, messages=messages, expected_by=expected_by, milestones=milestones)
         if snapshot is not None and view.status != record.status:
             await self._set_status(run_id, view.status)
         return view
@@ -298,9 +382,12 @@ class RunService:
     async def _start(self, run_id: str, new: NewRun) -> None:
         authorization = TaskAuthorization(
             run_id=run_id, max_spend=new.max_spend, currency=new.currency, permitted_platforms=self._platforms,
-            permitted_actions=_GRANTED_ACTIONS, expires_at=datetime.now(UTC) + _AUTHORIZATION_TTL,
+            permitted_actions=granted_actions(new.domain), expires_at=datetime.now(UTC) + _AUTHORIZATION_TTL,
         )
-        initial = make_initial_state(run_id=run_id, original_intent=intent_text(new), authorization=authorization)
+        initial = make_initial_state(
+            run_id=run_id, original_intent=intent_text(new), authorization=authorization, domain=new.domain,
+            deliver_by=deadline_of(new.deliver_by),
+        )
         status = "failed"
         try:
             final = await self._runs.start(initial)

@@ -108,6 +108,19 @@ def test_steps_track_progress_and_mark_where_a_stopped_run_ended():
     assert stopped.stop_reason == "no_progress" and stopped.status == "stopped"
 
 
+def test_delivery_dates_come_from_the_approved_terms_then_the_run_deadline():
+    deadline = datetime(2026, 12, 12, tzinfo=UTC)
+    slipped = datetime(2026, 12, 15, tzinfo=UTC)
+    record = RunRecord(run_id="r2", user_id="u1", idempotency_key="k2", goal="site", max_spend=Decimal("100"),
+                       currency="USD", status="running", created_at=T0, updated_at=T0, deliver_by=deadline)
+    assert run_view(record).promised_by == deadline and run_view(record).expected_by is None
+    view = run_view(record, snap(), expected_by=slipped)
+    assert (view.promised_by, view.expected_by) == (deadline, slipped)
+    waiting = run_view(record, snap({"pending_approval": PENDING}, ("await_approval",)))
+    assert waiting.promised_by == TERMS.latest_acceptable_at
+    assert run_view(RECORD).promised_by is None
+
+
 def test_untrusted_free_text_has_no_path_into_the_view():
     view = run_view(RECORD, snap({"candidates": [GOOD], "evaluation": REPORT, "errors": ["secret internal detail"]}))
     assert "secret internal detail" not in view.model_dump_json()

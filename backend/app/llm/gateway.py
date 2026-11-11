@@ -9,6 +9,7 @@ from pydantic import BaseModel, ValidationError
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.llm.deadline import remaining
 from app.llm.providers import LLMError, LLMProvider, LLMTransientError, build_provider
 
 T = TypeVar("T", bound=BaseModel)
@@ -53,6 +54,11 @@ async def call(
     last_error: Exception | None = None
 
     for attempt in range(1, attempts + 1):
+        left = remaining()
+        if left is not None and left <= 0:
+            logger.warning("llm_call_budget_exhausted", extra={"output_model": output_model.__name__})
+            raise LLMGatewayError("run LLM time budget exhausted")
+        attempt_timeout = timeout if left is None else min(timeout, left)
         started = time.perf_counter()
         meta = {
             "provider": llm.name,
@@ -62,7 +68,7 @@ async def call(
             "prompt_chars": len(current_prompt),
         }
         try:
-            response = await asyncio.wait_for(llm.generate(current_prompt, output_model), timeout)
+            response = await asyncio.wait_for(llm.generate(current_prompt, output_model), attempt_timeout)
             meta.update(
                 latency_ms=round((time.perf_counter() - started) * 1000),
                 input_tokens=response.input_tokens,
