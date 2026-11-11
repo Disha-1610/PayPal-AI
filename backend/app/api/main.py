@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api.routes import approvals, webhooks
+from app.api.routes import approvals, runs, webhooks
 from app.audit.service import AuditWriter
 from app.core.config import settings
 from app.core.logging import get_logger, setup_logging
@@ -31,6 +31,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan)
+app.include_router(runs.router)
 app.include_router(approvals.router)
 app.include_router(webhooks.router)
 

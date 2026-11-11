@@ -26,6 +26,10 @@ class RunController:
     def _config(run_id: str) -> dict[str, Any]:
         return {"configurable": {"thread_id": run_id}}
 
+    async def start(self, initial: TaskState) -> TaskState:
+        """Run a new task until it finishes or pauses at an interrupt."""
+        return await self._graph.ainvoke(initial, self._config(initial["run_id"]))
+
     async def state(self, run_id: str) -> TaskState:
         snapshot = await self._graph.aget_state(self._config(run_id))
         if not snapshot.values:

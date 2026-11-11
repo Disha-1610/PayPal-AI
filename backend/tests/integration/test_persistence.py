@@ -37,7 +37,7 @@ def test_migrations_apply_and_match_models(tmp_path):
     command.upgrade(cfg, "head")
     engine = create_engine(url)
     with engine.connect() as conn:
-        assert conn.execute(text("select version_num from alembic_version")).scalar() == "0004"
+        assert conn.execute(text("select version_num from alembic_version")).scalar() == "0005"
         diff = compare_metadata(MigrationContext.configure(conn), Base.metadata)
     engine.dispose()
     assert diff == []  # migration and models are in sync

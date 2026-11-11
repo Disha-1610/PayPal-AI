@@ -11,6 +11,7 @@ from app.db.session import SessionFactory
 from app.monitor.events.processor import EventProcessor
 from app.monitor.webhooks.paypal import WebhookVerifier
 from app.orchestrator.graph.runtime import RunController
+from app.runs.service import RunService
 from app.schemas.monitor import MonitorResult
 
 
@@ -45,6 +46,13 @@ def get_runs(request: Request) -> RunController:
     if runs is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "run controller is not available")
     return runs
+
+
+def get_run_service(request: Request) -> RunService:
+    service: RunService | None = getattr(request.app.state, "run_service", None)
+    if service is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "run service is not available")
+    return service
 
 
 def get_webhook_verifier(request: Request) -> WebhookVerifier:
