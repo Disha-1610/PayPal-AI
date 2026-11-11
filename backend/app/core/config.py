@@ -24,6 +24,15 @@ class Settings(BaseSettings):
     approval_key_id: str = "v1"  # recorded on each approval so the key can be rotated
     approval_ttl_seconds: int = 600
 
+    # Browser access (CORS) and user authentication.
+    cors_origins: str = "http://localhost:3000"  # comma-separated exact origins; credentials are allowed for these only
+    session_signing_key: SecretStr | None = None  # HMAC key for the sandbox session cookie (>= 32 chars)
+    session_ttl_seconds: int = 8 * 3600
+    auth_sandbox_enabled: bool = False  # anonymous sandbox sign-in; honoured only when environment == "development"
+    auth_jwt_issuer: str | None = None  # external identity provider: all three are required to enable JWT sign-in
+    auth_jwt_audience: str | None = None
+    auth_jwks_url: str | None = None
+
     paypal_client_id: str | None = None
     paypal_client_secret: SecretStr | None = None
     paypal_base_url: str = "https://api-m.sandbox.paypal.com"  # live: https://api-m.paypal.com
@@ -36,6 +45,18 @@ class Settings(BaseSettings):
     channel3_country: str | None = None  # e.g. "US"; Channel3 infers defaults when unset
     channel3_currency: str | None = None  # e.g. "USD"
     channel3_timeout_seconds: float = 10.0
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [o.strip().rstrip("/") for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def sandbox_auth_active(self) -> bool:
+        return self.auth_sandbox_enabled and self.environment == "development"
+
+    @property
+    def jwt_auth_active(self) -> bool:
+        return bool(self.auth_jwt_issuer and self.auth_jwt_audience and self.auth_jwks_url)
 
     @property
     def is_sqlite(self) -> bool:

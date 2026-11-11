@@ -13,3 +13,4 @@ langgraph-checkpoint-sqlite
 pytest
 pytest-asyncio
 google-genai
+pyjwt[crypto]
