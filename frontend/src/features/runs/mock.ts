@@ -22,6 +22,34 @@ export const MOCK_RUNS: readonly Run[] = [
       delivery_by: "2026-11-13T00:00:00Z",
       terms_hash: "9f2c1ab47e03d6685b1c0a4f7d92e8135ac6f0b2d47e91c8a3f5b60d1e7c2a94",
     },
+    messages: [
+      {
+        id: "m1",
+        role: "user",
+        text: "Buy a 27-inch 4K monitor under $350 with delivery by Friday",
+        created_at: "2026-11-11T09:12:00Z",
+      },
+      {
+        id: "m2",
+        role: "agent",
+        agent: "intent",
+        text: "Got it: hard limits are $350 and delivery by Friday. Is USB-C a requirement or a nice-to-have?",
+        created_at: "2026-11-11T09:12:20Z",
+        is_question: true,
+      },
+      {
+        id: "m3",
+        role: "user",
+        text: "Nice-to-have is fine.",
+        created_at: "2026-11-11T09:13:00Z",
+      },
+      {
+        id: "m4",
+        role: "system",
+        text: "Found 4 viable offers. Waiting for your approval.",
+        created_at: "2026-11-11T09:15:00Z",
+      },
+    ],
     candidates: [
       {
         id: "c1",

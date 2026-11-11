@@ -1,6 +1,7 @@
 import type { SSEMessage } from "@/lib/sse";
 import type { ApprovalRequest } from "@/features/approvals/types";
 import type { Candidate } from "@/features/candidates/types";
+import type { ChatMessage } from "@/features/chat/types";
 import type { PlanStep, Run, RunStatus } from "./types";
 
 /**
@@ -12,6 +13,7 @@ export type RunEvent =
   | { type: "run.status"; status: RunStatus; iteration: number; updated_at: string }
   | { type: "step.updated"; step: PlanStep }
   | { type: "candidates.updated"; candidates: Candidate[] }
+  | { type: "message.added"; message: ChatMessage }
   | { type: "approval.requested"; approval: ApprovalRequest }
   | { type: "approval.resolved" };
 
@@ -53,6 +55,12 @@ export function parseRunEvent(message: SSEMessage): RunEvent | null {
       return Array.isArray(payload.candidates)
         ? { type: message.event, candidates: payload.candidates as Candidate[] }
         : null;
+    case "message.added":
+      return isRecord(payload.message) &&
+        typeof payload.message.id === "string" &&
+        typeof payload.message.text === "string"
+        ? { type: message.event, message: payload.message as unknown as ChatMessage }
+        : null;
     case "approval.requested":
       return isRecord(payload.approval) && typeof payload.approval.terms_hash === "string"
         ? { type: message.event, approval: payload.approval as unknown as ApprovalRequest }
@@ -85,6 +93,12 @@ export function applyRunEvent(run: Run, event: RunEvent): Run {
     }
     case "candidates.updated":
       return { ...run, candidates: event.candidates };
+    case "message.added": {
+      const messages = run.messages ?? [];
+      return messages.some((m) => m.id === event.message.id)
+        ? run
+        : { ...run, messages: [...messages, event.message] };
+    }
     case "approval.requested":
       return { ...run, status: "awaiting_approval", pending_approval: event.approval };
     case "approval.resolved":

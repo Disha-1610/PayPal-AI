@@ -17,6 +17,13 @@ export function formatDateTime(iso: string): string {
   return Number.isNaN(date.getTime()) ? "—" : `${dateTime.format(date)} UTC`;
 }
 
+const time = new Intl.DateTimeFormat("en-US", { timeStyle: "short", timeZone: "UTC" });
+
+export function formatTime(iso: string): string {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? "" : time.format(date);
+}
+
 export function formatUsd(amount: number): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(amount);
 }

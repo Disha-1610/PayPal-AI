@@ -3,6 +3,7 @@ import type { RunStatus } from "./types";
 
 const CONFIG: Record<RunStatus, { label: string; tone: BadgeTone }> = {
   running: { label: "Running", tone: "info" },
+  awaiting_input: { label: "Needs your input", tone: "warning" },
   awaiting_approval: { label: "Awaiting approval", tone: "warning" },
   completed: { label: "Completed", tone: "success" },
   failed: { label: "Failed", tone: "danger" },

@@ -1,7 +1,21 @@
 import type { ApprovalRequest } from "@/features/approvals/types";
+import type { ChatMessage } from "@/features/chat/types";
 import type { Candidate } from "@/features/candidates/types";
 
-export type RunStatus = "running" | "awaiting_approval" | "completed" | "failed" | "stopped";
+export type RunStatus =
+  | "running"
+  | "awaiting_input"
+  | "awaiting_approval"
+  | "completed"
+  | "failed"
+  | "stopped";
+
+/** Statuses in which the user can still send messages (constraint changes, answers). */
+export const ACTIVE_STATUSES: readonly RunStatus[] = [
+  "running",
+  "awaiting_input",
+  "awaiting_approval",
+];
 
 export type StepStatus = "pending" | "running" | "done" | "failed" | "skipped";
 
@@ -39,6 +53,7 @@ export interface Run {
   /** Present only while `status` is "awaiting_approval". */
   pending_approval?: ApprovalRequest;
   candidates?: Candidate[];
+  messages?: ChatMessage[];
   steps: PlanStep[];
 }
 

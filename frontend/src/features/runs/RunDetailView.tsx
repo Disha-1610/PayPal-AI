@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Card, CardBody, CardHeader } from "@/components/Card";
+import { ChatPanel } from "@/features/chat/ChatPanel";
 import { ConnectionBadge } from "@/components/ConnectionBadge";
 import { useRunState } from "@/hooks/useRunState";
 import { ApprovalCard } from "@/features/approvals/ApprovalCard";
@@ -33,6 +34,7 @@ export function RunDetailView({ run: initialRun }: { run: Run }) {
       {run.status === "awaiting_approval" && run.pending_approval ? (
         <ApprovalCard key={run.pending_approval.terms_hash} request={run.pending_approval} />
       ) : null}
+      <ChatPanel runId={run.id} status={run.status} messages={run.messages ?? []} />
       {run.candidates && run.candidates.length > 0 ? (
         <CandidatesPanel candidates={run.candidates} />
       ) : null}

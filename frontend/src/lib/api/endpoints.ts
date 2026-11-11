@@ -5,6 +5,7 @@ import type {
   PayPalWebhookHeaders,
   WebhookResponse,
 } from "@/types/api";
+import type { ChatMessage, SendMessageInput } from "@/features/chat/types";
 import type { CreateRunInput, CreateRunResponse } from "@/features/intake/types";
 import type { Run, RunPage } from "@/features/runs/types";
 import { ApiError, request } from "./client";
@@ -53,6 +54,27 @@ export async function createRun(
   });
   if (!response || typeof response.run_id !== "string") throw malformed("create run");
   return { run_id: response.run_id };
+}
+
+/**
+ * Send a user message into a run (answer a question or change a constraint).
+ * `client_id` doubles as the idempotency key so retries never duplicate the message.
+ */
+export async function sendRunMessage(
+  runId: string,
+  input: SendMessageInput,
+  signal?: AbortSignal,
+): Promise<ChatMessage> {
+  const message = await request<ChatMessage>(`/runs/${encodeURIComponent(runId)}/messages`, {
+    method: "POST",
+    body: input,
+    headers: { "Idempotency-Key": input.client_id },
+    signal,
+  });
+  if (!message || typeof message.id !== "string" || typeof message.text !== "string") {
+    throw malformed("message");
+  }
+  return message;
 }
 
 /** Fetch a single run. 404 means it does not exist or is not visible to the caller. */
