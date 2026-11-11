@@ -122,7 +122,7 @@ async def test_list_is_newest_first_and_paginates_by_cursor(factory):
     first = (await client.get("/runs", params={"limit": 2})).json()
     assert [r["id"] for r in first["items"]] == ids[::-1][:2] and first["next_cursor"]
     second = (await client.get("/runs", params={"limit": 2, "cursor": first["next_cursor"]})).json()
-    assert [r["id"] for r in second["items"]] == ids[::-1][2:] and second["next_cursor"] is None
+    assert [r["id"] for r in second["items"]] == ids[::-1][2:] and "next_cursor" not in second
 
 
 async def test_bad_cursor_is_400(factory):

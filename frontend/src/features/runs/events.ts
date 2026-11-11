@@ -6,8 +6,8 @@ import type { PaymentInfo } from "@/features/payment/types";
 import type { PlanStep, Run, RunStatus } from "./types";
 
 /**
- * Frontend contract for `GET /runs/{run_id}/events` (not yet implemented in the
- * backend). The SSE `event:` field is the discriminator; `data:` is the JSON payload.
+ * Frontend contract for `GET /runs/{run_id}/events`. The SSE `event:` field is the
+ * discriminator; `data:` is the JSON payload. The backend currently sends `run.snapshot` only.
  */
 export type RunEvent =
   | { type: "run.snapshot"; run: Run }

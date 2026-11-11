@@ -201,7 +201,7 @@ class RunService:
             view = await self.view(user_id, run_id)
             if view is None:
                 return
-            payload = view.model_dump_json()
+            payload = view.model_dump_json(exclude_none=True)  # absent, not null: the client types use optional fields
             if payload != last:
                 last, idle = payload, 0.0
                 yield f'event: run.snapshot\ndata: {{"run": {payload}}}\n\n'

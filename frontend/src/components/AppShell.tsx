@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { ShoppingBag } from "lucide-react";
+import { SessionGate } from "./SessionGate";
 
 export function AppShell({ children }: { children: ReactNode }) {
   return (
@@ -18,7 +19,9 @@ export function AppShell({ children }: { children: ReactNode }) {
           </nav>
         </div>
       </header>
-      <main className="mx-auto max-w-6xl px-4 py-8">{children}</main>
+      <main className="mx-auto max-w-6xl px-4 py-8">
+        <SessionGate>{children}</SessionGate>
+      </main>
     </div>
   );
 }

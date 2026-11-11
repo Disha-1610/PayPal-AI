@@ -3,10 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ApiError, createRun } from "@/lib/api";
-import { MOCK_RUNS } from "@/features/runs/mock";
 import type { CreateRunInput } from "@/features/intake/types";
-
-const USE_MOCKS = process.env.NEXT_PUBLIC_USE_MOCKS === "true";
 
 export interface UseCreateRun {
   submit: (input: CreateRunInput) => Promise<void>;
@@ -32,9 +29,7 @@ export function useCreateRun(): UseCreateRun {
       setSubmitting(true);
       setError(null);
       try {
-        const runId = USE_MOCKS
-          ? MOCK_RUNS[0].id
-          : (await createRun(input, keyRef.current, controller.signal)).run_id;
+        const { run_id: runId } = await createRun(input, keyRef.current, controller.signal);
         router.push(`/runs/${encodeURIComponent(runId)}`);
       } catch (err) {
         if (controller.signal.aborted) return;

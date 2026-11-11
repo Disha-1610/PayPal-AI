@@ -13,10 +13,8 @@ import { OutcomeSummary } from "./OutcomeSummary";
 import { PaymentStatusCard } from "./PaymentStatusCard";
 import { reportPayerReturn } from "./source";
 
-const LIVE = process.env.NEXT_PUBLIC_ENABLE_SSE === "true";
-
 function ReturnContent({ initialRun, cancelled }: { initialRun: Run; cancelled: boolean }) {
-  const { run } = useRunState(initialRun, { enabled: LIVE });
+  const { run } = useRunState(initialRun);
   const reported = useRef(false);
 
   // Resume the paused run once. The outcome still comes from webhooks/run state.

@@ -46,7 +46,7 @@ async def create_run(
     return CreateRunResponse(run_id=record.run_id)
 
 
-@router.get("/runs", response_model=RunPageView)
+@router.get("/runs", response_model=RunPageView, response_model_exclude_none=True)
 async def list_runs(
     principal: Annotated[Principal, Depends(get_principal)],
     service: Annotated[RunService, Depends(get_run_service)],
@@ -60,7 +60,7 @@ async def list_runs(
     return RunPageView(items=[run_view(r) for r in page.items], next_cursor=page.next_cursor)
 
 
-@router.get("/runs/{run_id}", response_model=RunView)
+@router.get("/runs/{run_id}", response_model=RunView, response_model_exclude_none=True)
 async def get_run(
     run_id: str,
     principal: Annotated[Principal, Depends(get_principal)],
@@ -79,7 +79,9 @@ class MessageBody(BaseModel):
     client_id: str = Field(min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
 
 
-@router.post("/runs/{run_id}/messages", response_model=MessageView, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/runs/{run_id}/messages", response_model=MessageView, response_model_exclude_none=True, status_code=status.HTTP_201_CREATED
+)
 async def send_message(
     run_id: str,
     body: MessageBody,

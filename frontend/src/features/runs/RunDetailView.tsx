@@ -14,12 +14,9 @@ import { StepInspector } from "@/features/plan/StepInspector";
 import { RunSummary } from "./RunSummary";
 import type { Run } from "./types";
 
-/** Live streaming is opt-in until the backend exposes `/runs/{id}/events`. */
-const LIVE = process.env.NEXT_PUBLIC_ENABLE_SSE === "true";
-
 /** Run data is seeded by the page and kept current by SSE; selection is local UI state. */
 export function RunDetailView({ run: initialRun }: { run: Run }) {
-  const { run, connection } = useRunState(initialRun, { enabled: LIVE });
+  const { run, connection } = useRunState(initialRun);
   const [selectedId, setSelectedId] = useState<string | null>(
     run.steps.find((s) => s.status === "running")?.id ?? run.steps[0]?.id ?? null,
   );
@@ -27,11 +24,9 @@ export function RunDetailView({ run: initialRun }: { run: Run }) {
 
   return (
     <div className="space-y-6">
-      {LIVE ? (
-        <div className="flex justify-end">
-          <ConnectionBadge state={connection} />
-        </div>
-      ) : null}
+      <div className="flex justify-end">
+        <ConnectionBadge state={connection} />
+      </div>
       <RunSummary run={run} />
       <OutcomeSummary run={run} />
       {run.payment ? (

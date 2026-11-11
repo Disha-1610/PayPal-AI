@@ -45,6 +45,15 @@ export async function getAuthHeaders(): Promise<Record<string, string>> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+type SessionRefresher = () => Promise<void>;
+
+let sessionRefresher: SessionRefresher | null = null;
+
+/** Re-establishes the session after a 401; the failed request is retried once. */
+export function setSessionRefresher(refresher: SessionRefresher | null): void {
+  sessionRefresher = refresher;
+}
+
 export interface RequestOptions {
   method?: "GET" | "POST";
   body?: unknown;
@@ -73,6 +82,10 @@ async function parseBody(response: Response): Promise<unknown> {
 }
 
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  return send<T>(path, options, false);
+}
+
+async function send<T>(path: string, options: RequestOptions, retried: boolean): Promise<T> {
   const { method = "GET", body, headers = {}, signal, timeoutMs = DEFAULT_TIMEOUT_MS } = options;
 
   const finalHeaders = new Headers({ Accept: "application/json", ...headers });
@@ -106,6 +119,16 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
       errorMessage(data, response.statusText || "request failed"),
       data,
     );
+    if (error.isUnauthorized && sessionRefresher && !retried) {
+      try {
+        await sessionRefresher();
+      } catch {
+        // the refresh failed: report the original 401 below
+        unauthorizedHandler?.(error);
+        throw error;
+      }
+      return send<T>(path, options, true);
+    }
     if (error.isUnauthorized) unauthorizedHandler?.(error);
     throw error;
   }
