@@ -5,11 +5,13 @@
 * ``resume``         -> continue a run paused at ``interrupt()``
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
 from langgraph.types import Command
 
+from app.orchestrator.agents.negotiator.offer import parse_counter_offer
 from app.schemas.authorization import PendingApproval
 from app.schemas.monitor import TaskView
 from app.schemas.state import TaskState
@@ -26,6 +28,10 @@ class RunSnapshot:
     values: TaskState
     next: tuple[str, ...]
     interrupts: tuple[object, ...]
+
+
+class NotNegotiable(RuntimeError):
+    """A counter-offer arrived while the run is busy elsewhere (paused for the user, or not yet through its first order)."""
 
 
 class RunController:
@@ -68,6 +74,19 @@ class RunController:
     async def replan(self, run_id: str) -> TaskState:
         """Re-enter the graph at ``monitor_intake`` (-> Adapt), abandoning whatever the run was paused on."""
         await self._graph.aupdate_state(self._config(run_id), {}, as_node="monitor_intake")
+        return await self._graph.ainvoke(None, self._config(run_id))
+
+    async def receive_counter_offer(self, run_id: str, raw: Mapping[str, object]) -> TaskState:
+        """A counterparty's counter-offer. It is sanitized into structured fields first (``ValidationError`` rejects the
+        whole offer, nothing is stored). If the run is waiting for the reply it resumes with it; otherwise a finished
+        run re-enters at ``negotiation_intake``. Either way it reaches the Negotiator only through the Guard."""
+        offer = parse_counter_offer(raw)
+        snapshot = await self.snapshot(run_id)
+        if "await_counterparty" in snapshot.next:
+            return await self.resume(run_id, dict(raw))
+        if snapshot.next or not snapshot.values.get("approvals"):
+            raise NotNegotiable(run_id)
+        await self._graph.aupdate_state(self._config(run_id), {"incoming_offer": offer}, as_node="negotiation_intake")
         return await self._graph.ainvoke(None, self._config(run_id))
 
     async def set_status(self, run_id: str, status: str) -> None:

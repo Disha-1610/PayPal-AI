@@ -82,6 +82,10 @@ class DomainPlugin(BaseModel):
         "A hard constraint on one of them forbids cross-domain expansion in Phase 4.",
     )
 
+    negotiates: bool = Field(
+        default=False, description="A failed verification opens a negotiation (contractor / A2A) instead of a new search"
+    )
+
     verification: VerificationSpec = Field(
         default_factory=VerificationSpec, description="How Phase 5 verifies delivery before settlement"
     )

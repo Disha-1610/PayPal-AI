@@ -11,6 +11,7 @@ from app.schemas.plan import PlanStep
 # Credentials and spend authority are granted through ``TaskAuthorization``, never extracted from chat.
 A2A = DomainPlugin(
     name="a2a",
+    negotiates=True,
     description="Negotiate a deal with another agent on the user's behalf.",
     goal_question="What do you want to negotiate with the other agent?",
     fields=(

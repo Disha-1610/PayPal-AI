@@ -19,7 +19,9 @@ from app.schemas.candidate import Candidate
 from app.schemas.constraints import Constraint, ConstraintDiff, diff_constraints
 from app.schemas.coordinator import CoordinatorProgress
 from app.schemas.discovery import DiscoveryProgress
+from app.schemas.approval_terms import ApprovalTerms
 from app.schemas.evaluator import EvaluationReport
+from app.schemas.negotiator import CounterOffer, NegotiationResult
 from app.schemas.recheck import MismatchReport
 
 STATE_VERSION = 1
@@ -86,7 +88,10 @@ class TaskState(TypedDict, total=False):
     domain: str  # domain plug-in name; the Monitor loads its spec from this
     anchor_at: datetime  # when the order/engagement started; turns "within N days" into a date
     pending_approval: PendingApproval | None  # terms awaiting the user's decision; cleared once answered
-    negotiation_round: int  # incremented by the Router per negotiation round
+    negotiation_round: int  # negotiation rounds played; the Negotiator's round cap reads it
+    incoming_offer: CounterOffer | None  # the counterparty's sanitized offer awaiting the Negotiator
+    negotiation_result: NegotiationResult  # the Negotiator's last result (the Router reads it)
+    agreed_terms: ApprovalTerms | None  # terms a negotiation put to the user; the payment Guard checks the approval against them
     recheck_report: MismatchReport  # the Executor's last recheck; the Router reads it
     payment_id: str  # ledger payment of the order in flight (a UUID string)
     approval_url: str | None  # where the payer approves at the provider

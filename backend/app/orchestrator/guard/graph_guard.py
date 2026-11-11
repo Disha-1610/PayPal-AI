@@ -6,6 +6,7 @@ status fails closed. Nothing here calls an LLM, and none of it replaces the Paym
 """
 
 from datetime import datetime
+from decimal import Decimal
 
 from app.audit.events import AuditScope, Phase
 from app.schemas.approval_terms import ApprovalTerms
@@ -57,6 +58,20 @@ def guard_execution(state: TaskState, *, now: datetime, audit: AuditScope | None
     if decision.allowed or decision.requires_approval:
         return _passed("execute", audit, candidate_id=chosen.candidate_id)
     return _blocked("execute", decision.reason, audit)
+
+
+def guard_negotiation(state: TaskState, *, now: datetime, audit: AuditScope | None = None) -> dict[str, object]:
+    """Into the Negotiator: the task must hold a user approval to negotiate around, and the NEGOTIATE grant for its platform."""
+    approvals = state.get("approvals", [])
+    if not approvals or approvals[-1].terms is None:
+        return _blocked("negotiate", "no approved terms to negotiate around", audit)
+    approved = approvals[-1]
+    decision = evaluate_authorization(
+        state["authorization"], action=Action.NEGOTIATE, platform=approved.platform, amount=Decimal(0), currency=approved.currency, now=now
+    )
+    if decision.allowed:
+        return _passed("negotiate", audit, platform=approved.platform)
+    return _blocked("negotiate", decision.reason, audit)
 
 
 def guard_payment(

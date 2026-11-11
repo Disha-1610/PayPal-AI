@@ -48,6 +48,14 @@ from app.orchestrator.agents.intent.agent import extract_intent, to_state_update
 from app.orchestrator.executor.executor import ExecutionBlocked, Executor
 from app.orchestrator.executor.state import ExecutionState
 from app.orchestrator.graph.approval import await_approval_node, request_approval_node
+from app.orchestrator.graph.negotiation import (
+    STATUS_NEGOTIATING,
+    CounterpartyChannel,
+    EnvelopeFor,
+    counterparty_reply,
+    negotiate_step,
+    send_counter_step,
+)
 from app.orchestrator.graph.stop import stop_report_node
 from app.orchestrator.guard.approval_guard import signed_approval_verifier
 from app.orchestrator.guard.graph_guard import (
@@ -55,6 +63,7 @@ from app.orchestrator.guard.graph_guard import (
     GUARD_PASSED,
     guard_discovery_data,
     guard_execution,
+    guard_negotiation,
     guard_payment,
 )
 from app.orchestrator.router.coordinator import CoordinatorRoute, route_coordinator_result
@@ -63,6 +72,7 @@ from app.orchestrator.router.evaluator import EvaluatorRoute, route_evaluation
 from app.orchestrator.router.executor import ExecutorRoute, route_execution
 from app.orchestrator.progress.hashing import progress_hash
 from app.orchestrator.router.intent import IntentRoute, route_intent
+from app.orchestrator.router.negotiator import route_negotiation
 from app.orchestrator.router.limits import GraphLimits, LimitRoute, route_limits
 from app.orchestrator.router.payment import PaymentRoute, route_payment_error
 from app.payments.service import PaymentPermit, PaymentServiceError
@@ -75,6 +85,7 @@ from app.schemas.coordinator import CoordinatorEvent, Trigger
 from app.schemas.discovery import DiscoveryPolicy, DiscoveryRoute
 from app.schemas.evaluator import TextSource
 from app.schemas.intent import IntentResult, IntentStatus
+from app.schemas.negotiator import NegotiatorPolicy, NegotiatorRoute
 from app.schemas.state import TaskState
 
 
@@ -95,6 +106,10 @@ class GraphDeps:
     discovery_policy: DiscoveryPolicy = field(default_factory=DiscoveryPolicy)
     now: Callable[[], datetime] = utcnow
     limits: GraphLimits = field(default_factory=GraphLimits)
+    # Negotiation (contractor / A2A): the bounds builder, the counterparty transport and the round policy.
+    envelope_for: EnvelopeFor | None = None
+    counterparty: CounterpartyChannel | None = None
+    negotiator_policy: NegotiatorPolicy = field(default_factory=NegotiatorPolicy)
 
 
 def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None) -> Any:
@@ -203,7 +218,7 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
         if terms is None:
             return {"status": GUARD_BLOCKED, "errors": ["guard blocked payment: no approved terms on record"]}
         return guard_payment(
-            state, terms=d.terms_for(candidate(state), state), verifier=permit_for(state, terms).verifier,
+            state, terms=state.get("agreed_terms") or d.terms_for(candidate(state), state), verifier=permit_for(state, terms).verifier,
             now=d.now(), audit=scope(state),
         )
 
@@ -252,7 +267,7 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
         terms = d.terms_for(chosen, state)
         async with session_scope(d.session_factory) as session:
             checked = await d.executor.recheck(session, run_id=state["run_id"], terms=terms)
-        update: dict[str, object] = {"recheck_report": checked.report, "status": "rechecked"}
+        update: dict[str, object] = {"recheck_report": checked.report, "status": "rechecked", "agreed_terms": None}
         if checked.report.can_proceed:
             update["pending_approval"] = PendingApproval(
                 action=Action.CREATE_ORDER, candidate_id=chosen.candidate_id, platform=chosen.source, terms=terms,
@@ -273,7 +288,8 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
         terms = state["approvals"][-1].terms
         assert terms is not None
         permit = permit_for(state, terms)
-        order_id = f"order-{state['run_id']}-{terms.terms_hash()[:12]}"
+        round_ = state.get("negotiation_round", 0)
+        order_id = f"order-{state['run_id']}-{terms.terms_hash()[:12]}" + (f"-r{round_}" if round_ else "")
         try:
             async with session_scope(d.session_factory) as session:
                 try:
@@ -322,8 +338,50 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
         if status == "payment_refused":
             return "adapt"
         if status == ExecutionState.VOIDED.value:
-            return "discovery_start"  # verification failed or terms changed: funds released, search again
+            # Verification failed or the terms changed and the funds are released. A negotiating domain (contractor /
+            # A2A) renegotiates inside the user's envelope; any other domain searches again.
+            return "guard_negotiate" if can_negotiate(state) else "discovery_start"
         return END  # settled, or awaiting confirmation (the worker/Monitor resumes it), or expired
+
+    # ---- negotiation (contractor / A2A): settle FAIL or a counter-offer -> Negotiator -> Router ---------------------
+
+    def can_negotiate(state: TaskState) -> bool:
+        return d.plugin.negotiates and d.envelope_for is not None and bool(state.get("approvals"))
+
+    def guard_negotiate(state: TaskState) -> dict[str, object]:
+        return guard_negotiation(state, now=d.now(), audit=scope(state))
+
+    async def negotiate(state: TaskState) -> dict[str, object]:
+        assert d.envelope_for is not None  # can_negotiate / the intake guard it
+        return await negotiate_step(
+            state, envelope_for=d.envelope_for, policy=d.negotiator_policy, provider=d.provider, audit=scope(state)
+        )
+
+    def after_negotiate(state: TaskState) -> str:
+        route = route_negotiation(state["negotiation_result"], audit=scope(state))
+        return {
+            # An accepted deal is always re-approved: the earlier approval is single-use and already spent.
+            NegotiatorRoute.EXECUTE: "request_approval", NegotiatorRoute.ASK_USER_APPROVAL: "request_approval",
+            NegotiatorRoute.SEND_COUNTER: "send_counter", NegotiatorRoute.REPORT: "stop_report",
+        }[route]
+
+    async def send_counter(state: TaskState) -> dict[str, object]:
+        return await send_counter_step(state, channel=d.counterparty, audit=scope(state))
+
+    def after_send_counter(state: TaskState) -> str:
+        return "await_counterparty" if state.get("status") == "awaiting_counterparty" else "stop_report"
+
+    def await_counterparty(state: TaskState) -> dict[str, object]:
+        raw = interrupt({"kind": "counterparty_response", "round": state.get("negotiation_round", 0)})
+        return counterparty_reply(raw, audit=scope(state))
+
+    def after_counterparty(state: TaskState) -> str:
+        return "guard_negotiate" if state.get("incoming_offer") is not None else "stop_report"
+
+    def negotiation_intake(state: TaskState) -> dict[str, object]:
+        """Entry for an unsolicited counter-offer (``RunController.receive_counter_offer``): the offer is already
+        sanitized in state; it goes through the same Guard and Negotiator as a solicited reply."""
+        return {"status": STATUS_NEGOTIATING}
 
     def monitor_intake(state: TaskState) -> dict[str, object]:
         """Entry for Monitor-driven replans (``aupdate_state(..., as_node="monitor_intake")``). The worker has
@@ -337,7 +395,8 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
         "discovery_finish": discovery_finish, "evaluate": evaluate, "coordinator": coordinator, "select": select,
         "switch_candidate": switch_candidate, "recheck": recheck, "request_approval": request_approval,
         "await_approval": await_approval_node, "place_order": place_order, "await_payer": await_payer, "settle": settle,
-        "monitor_intake": monitor_intake,
+        "monitor_intake": monitor_intake, "guard_negotiate": guard_negotiate, "negotiate": negotiate,
+        "send_counter": send_counter, "await_counterparty": await_counterparty, "negotiation_intake": negotiation_intake,
         "guard_evaluate": guard_evaluate, "guard_execute": guard_execute, "guard_pay": guard_pay, "stop_report": stop_report,
     }.items():
         graph.add_node(name, node)
@@ -364,7 +423,12 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
     graph.add_conditional_edges("place_order", after_place_order, ["await_payer", "evaluate", "adapt"])
     graph.add_edge("await_payer", "settle")
     graph.add_edge("monitor_intake", "adapt")
-    graph.add_conditional_edges("settle", after_settle, ["await_payer", "adapt", "discovery_start", END])
+    graph.add_conditional_edges("settle", after_settle, ["await_payer", "adapt", "discovery_start", "guard_negotiate", END])
+    graph.add_conditional_edges("guard_negotiate", guarded("negotiate"), ["negotiate", "stop_report"])
+    graph.add_conditional_edges("negotiate", after_negotiate, ["request_approval", "send_counter", "stop_report"])
+    graph.add_conditional_edges("send_counter", after_send_counter, ["await_counterparty", "stop_report"])
+    graph.add_conditional_edges("await_counterparty", after_counterparty, ["guard_negotiate", "stop_report"])
+    graph.add_edge("negotiation_intake", "guard_negotiate")
     return graph.compile(checkpointer=checkpointer)
 
 

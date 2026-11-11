@@ -4,6 +4,7 @@ from app.schemas.plan import PlanStep
 
 CONTRACTOR = DomainPlugin(
     name="contractor",
+    negotiates=True,
     description="Hire a contractor or freelancer for a fixed piece of work.",
     goal_question="What work do you want the contractor to do?",
     fields=(
