@@ -39,6 +39,12 @@ export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): voi
   unauthorizedHandler = handler;
 }
 
+/** Auth headers for non-`request` callers (e.g. the SSE stream). */
+export async function getAuthHeaders(): Promise<Record<string, string>> {
+  const token = tokenProvider ? await tokenProvider() : null;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 export interface RequestOptions {
   method?: "GET" | "POST";
   body?: unknown;
