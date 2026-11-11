@@ -5,6 +5,7 @@
 * ``resume``         -> continue a run paused at ``interrupt()``
 """
 
+from dataclasses import dataclass
 from typing import Any
 
 from langgraph.types import Command
@@ -18,6 +19,15 @@ class UnknownRun(LookupError):
     """No checkpointed state exists for this run id."""
 
 
+@dataclass(frozen=True)
+class RunSnapshot:
+    """A run's checkpointed state plus where it is paused: the nodes it will run next and any interrupt payloads."""
+
+    values: TaskState
+    next: tuple[str, ...]
+    interrupts: tuple[object, ...]
+
+
 class RunController:
     def __init__(self, graph: Any) -> None:
         self._graph = graph
@@ -29,6 +39,13 @@ class RunController:
     async def start(self, initial: TaskState) -> TaskState:
         """Run a new task until it finishes or pauses at an interrupt."""
         return await self._graph.ainvoke(initial, self._config(initial["run_id"]))
+
+    async def snapshot(self, run_id: str) -> RunSnapshot:
+        snap = await self._graph.aget_state(self._config(run_id))
+        if not snap.values:
+            raise UnknownRun(run_id)
+        interrupts = tuple(i.value for task in snap.tasks for i in task.interrupts)
+        return RunSnapshot(values=snap.values, next=tuple(snap.next), interrupts=interrupts)
 
     async def state(self, run_id: str) -> TaskState:
         snapshot = await self._graph.aget_state(self._config(run_id))

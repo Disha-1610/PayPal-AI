@@ -5,14 +5,18 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from collections.abc import AsyncIterator
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.deps import Principal, get_principal, get_run_service
-from app.runs.service import InvalidCursor, NewRun, RunService
-from app.runs.view import RunPageView, RunView, run_view
+from app.runs.service import InvalidCursor, NewRun, NotAwaiting, RunService
+from app.runs.view import MessageView, RunPageView, RunView, run_view
 
 router = APIRouter(tags=["runs"])
+_KEEP_ALIVE = ": keep-alive\n\n"  # an SSE comment; keeps proxies from closing an idle stream
 
 
 class CreateRunBody(BaseModel):
@@ -62,7 +66,66 @@ async def get_run(
     principal: Annotated[Principal, Depends(get_principal)],
     service: Annotated[RunService, Depends(get_run_service)],
 ) -> RunView:
-    record = await service.get(principal.user_id, run_id)
-    if record is None:
+    view = await service.view(principal.user_id, run_id)
+    if view is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
-    return run_view(record)
+    return view
+
+
+class MessageBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1, max_length=2000)
+    client_id: str = Field(min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+@router.post("/runs/{run_id}/messages", response_model=MessageView, status_code=status.HTTP_201_CREATED)
+async def send_message(
+    run_id: str,
+    body: MessageBody,
+    principal: Annotated[Principal, Depends(get_principal)],
+    service: Annotated[RunService, Depends(get_run_service)],
+) -> MessageView:
+    """Answer the question the run is waiting on. The run resumes in the background; watch the event stream."""
+    try:
+        message = await service.post_message(principal.user_id, run_id, body.text.strip(), body.client_id)
+    except NotAwaiting as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    if message is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
+    return message
+
+
+@router.post("/runs/{run_id}/payer-return", status_code=status.HTTP_202_ACCEPTED)
+async def payer_return(
+    run_id: str,
+    principal: Annotated[Principal, Depends(get_principal)],
+    service: Annotated[RunService, Depends(get_run_service)],
+) -> Response:
+    """The payer is back from PayPal. Carries no PayPal data: the backend verifies the order itself."""
+    try:
+        found = await service.payer_return(principal.user_id, run_id)
+    except NotAwaiting as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    if not found:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
+    return Response(status_code=status.HTTP_202_ACCEPTED)
+
+
+@router.get("/runs/{run_id}/events")
+async def run_events(
+    run_id: str,
+    principal: Annotated[Principal, Depends(get_principal)],
+    service: Annotated[RunService, Depends(get_run_service)],
+) -> StreamingResponse:
+    """Server-sent events: ``run.snapshot`` frames whenever the run changes."""
+    if await service.get(principal.user_id, run_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
+
+    async def frames() -> AsyncIterator[str]:
+        async for frame in service.events(principal.user_id, run_id):
+            yield _KEEP_ALIVE if frame is None else frame
+
+    return StreamingResponse(
+        frames(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    )

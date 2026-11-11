@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.api.deps import Principal
 from app.api.routes import runs as runs_routes
 from app.db.base import Base
+from app.orchestrator.graph.runtime import UnknownRun
 from app.runs.service import RunService, intent_text, NewRun
 from app.schemas.authorization import Action
 from decimal import Decimal
@@ -16,6 +17,9 @@ from decimal import Decimal
 class FakeController:
     def __init__(self, *, fail=False):
         self.started, self.fail = [], fail
+
+    async def snapshot(self, run_id):
+        raise UnknownRun(run_id)
 
     async def start(self, initial):
         if self.fail:
