@@ -28,7 +28,8 @@ RunStatus = Literal[
     "running", "awaiting_input", "awaiting_approval", "awaiting_payment", "completed", "failed", "stopped"
 ]
 _CLIENT_STATUSES: frozenset[str] = frozenset(RunStatus.__args__)  # type: ignore[attr-defined]
-_PAUSED_AT = {"await_approval": "awaiting_approval", "await_payer": "awaiting_payment", "ask_user": "awaiting_input"}
+_PAUSED_AT = {"await_approval": "awaiting_approval", "await_payer": "awaiting_payment", "ask_user": "awaiting_input", "choose_candidate": "awaiting_input"}
+QUESTION_NODES = frozenset({"ask_user", "choose_candidate"})  # paused for a free-text answer from the user
 _GRAPH_STATUS = {
     "failed": "failed", "stopped": "stopped", "cancelled": "stopped", "settled": "completed", "completed": "completed",
     "voided": "stopped", "expired": "stopped",
@@ -140,7 +141,7 @@ def derive_status(snapshot: RunSnapshot) -> RunStatus:
 def question_text(snapshot: RunSnapshot) -> str | None:
     """What the run is asking the user, when paused at ``ask_user``: the interrupt's message, else the intent's
     clarifying questions."""
-    if "ask_user" not in snapshot.next:
+    if not QUESTION_NODES & set(snapshot.next):
         return None
     for payload in snapshot.interrupts:
         if isinstance(payload, dict) and isinstance(payload.get("message"), str) and payload["message"].strip():

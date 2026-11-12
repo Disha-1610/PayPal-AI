@@ -15,7 +15,8 @@ from app.llm.providers import LLMProvider
 from app.orchestrator.agents.evaluation.diagnosis import diagnose, summarize
 from app.orchestrator.agents.adapt.recovery import plan_adaptation, terminate
 from app.orchestrator.agents.adapt.relaxation import apply_proposal
-from app.orchestrator.agents.intent.agent import patch_intent, to_state_update
+from app.llm.gateway import LLMGatewayError
+from app.orchestrator.agents.intent.agent import IntentError, extract_intent, patch_intent, to_state_update
 from app.schemas.adapt import (
     AdaptPolicy,
     AdaptProgress,
@@ -72,7 +73,13 @@ def adapt_node(
     }
 
 
-def _request_payload(proposals: list[RelaxationProposal]) -> dict[str, object]:
+def _request_payload(proposals: list[RelaxationProposal], questions: list[str]) -> dict[str, object]:
+    if not proposals:  # entered from the Intent agent: ask its clarifying questions, there is nothing to relax yet
+        return {
+            "type": "clarification",
+            "message": "\n".join(questions) or "Could you describe what you need in a little more detail?",
+            "proposals": [],
+        }
     lines = [f"{i}. {p.description}" for i, p in enumerate(proposals, start=1)]
     message = (
         "I could not find an option that meets all of your requirements. "
@@ -127,9 +134,13 @@ async def resolve_decision(
         return {**cleared, "constraints": updated, "constraint_diffs": [diff], "status": "adapting"}
 
     assert decision.text is not None  # guaranteed by UserDecision validation for REPLY
-    result, diff, _ = await patch_intent(
-        decision.text, state.get("goal", ""), list(constraints), plugin, provider=provider, audit=audit
-    )
+    goal = state.get("goal", "")
+    if not goal.strip():
+        # A patch carries constraint operations only, so a missing goal is read from the reply by full extraction;
+        # its constraints are discarded here and arrive (grounded in the same reply) through the patch below.
+        found, _ = await extract_intent(decision.text, plugin, provider=provider, audit=audit)
+        goal = found.goal
+    result, diff, _ = await patch_intent(decision.text, goal, list(constraints), plugin, provider=provider, audit=audit)
     return {**cleared, **to_state_update(result, diff)}
 
 
@@ -137,5 +148,14 @@ async def ask_user_node(
     state: TaskState, *, plugin: DomainPlugin, provider: LLMProvider | None = None, audit: AuditScope | None = None
 ) -> dict[str, object]:
     """Pause for the user. Nothing with side effects may run above ``interrupt``: LangGraph re-runs this node on resume."""
-    raw = interrupt(_request_payload(state.get("relaxation_proposals", [])))
-    return await resolve_decision(parse_decision(raw), state, plugin=plugin, provider=provider, audit=audit)
+    raw = interrupt(_request_payload(state.get("relaxation_proposals", []), state.get("questions", [])))
+    try:
+        return await resolve_decision(parse_decision(raw), state, plugin=plugin, provider=provider, audit=audit)
+    except (LLMGatewayError, IntentError) as exc:
+        # The answer could not be applied: nothing changed, so ask again rather than crash the resumed run.
+        if audit:
+            audit.emit(Phase.ADAPT, "USER_REPLY_UNUSABLE", node="adapt", decision="reask", reason=str(exc))
+        return {
+            "status": "blocked",
+            "questions": ["Sorry, I could not apply that answer. Could you rephrase it?", *state.get("questions", [])],
+        }

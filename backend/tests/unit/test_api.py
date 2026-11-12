@@ -16,7 +16,8 @@ from app.core.config import settings
 from app.db.base import Base
 from app.db.models.audit import AuditLog
 from app.monitor.webhooks.paypal import WebhookNotReady, WebhookRejected
-from app.orchestrator.graph.runtime import UnknownRun
+from app.orchestrator.graph.runtime import RunSnapshot, UnknownRun
+from app.runs.service import RunService
 from app.orchestrator.guard.approval_guard import signed_approval_verifier
 from app.schemas.approval_terms import ApprovalTerms
 from app.schemas.authorization import Action, Approval, PendingApproval, TaskAuthorization
@@ -44,6 +45,10 @@ class FakeRuns:
         self.resumed.append(value)
         return {"status": "approved"}
 
+    async def snapshot(self, run_id):
+        await self.state(run_id)
+        return RunSnapshot(values={}, next=("await_approval",) if self.pending else (), interrupts=())
+
     async def load_task(self, run_id):
         raise LookupError(run_id)
 
@@ -62,12 +67,18 @@ def signing_key(monkeypatch):
     monkeypatch.setattr(settings, "approval_signing_key", SecretStr(KEY))
 
 
-def make_app(factory, runs=None, *, auth=True) -> FastAPI:
+def make_app(factory, runs=None, *, auth=True, owner="u1") -> FastAPI:
     app = FastAPI()
     app.include_router(approvals.router)
     app.include_router(webhooks.router)
     app.state.session_factory = factory
     app.state.runs = runs or FakeRuns()
+    # The real run service; only ownership lookup is faked: user u1 owns run r1.
+    service = RunService(app.state.runs, factory, frozenset())
+    async def owned(user_id, run_id):
+        return object() if (user_id, run_id) == (owner, "r1") else None
+    service.get = owned  # type: ignore[method-assign]
+    app.state.run_service = service
     if auth:
         async def authenticate(request):
             return Principal(user_id="u1", session_id="s1")
@@ -123,6 +134,21 @@ async def test_no_pending_unknown_run_and_unauthenticated(factory):
         assert post_approval(client, run="nope").status_code == 404
     with TestClient(make_app(factory, auth=False)) as client:
         assert post_approval(client).status_code == 401
+
+
+async def test_approval_for_another_users_run_is_not_found_and_changes_nothing(factory):
+    app = make_app(factory, owner="someone-else")
+    with TestClient(app) as client:
+        assert post_approval(client).status_code == 404
+    assert app.state.runs.resumed == [] and await audit_rows(factory) == []
+
+
+async def test_decision_while_the_run_is_already_resuming_is_refused(factory):
+    app = make_app(factory)
+    app.state.run_service._resuming.add("r1")  # a first submit is still running the gate
+    with TestClient(app) as client:
+        assert post_approval(client).status_code == 409
+    assert app.state.runs.resumed == [] and await audit_rows(factory) == []
 
 
 async def test_missing_signing_key_fails_closed(factory, monkeypatch):

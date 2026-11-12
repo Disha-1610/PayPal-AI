@@ -25,12 +25,26 @@ from app.monitor.timers.scheduler import overdue_events
 from app.orchestrator.graph.runtime import RunController, UnknownRun
 from app.orchestrator.guard.approval_guard import signed_approval_verifier
 from app.orchestrator.router.monitor import route_monitor_result
+from app.orchestrator.executor.state import ExecutionState
+from app.payments.provider import ProviderError
 from app.payments.service import PaymentPermit, PaymentService, PaymentServiceError
-from app.schemas.monitor import MonitorResult, Route
+from app.domains import get_plugin
+from app.schemas.monitor import EventOutcome, MonitorResult, Problem, Route
 
 logger = get_logger(__name__)
 _NODE = "monitor_worker"
 _HELD = frozenset({PaymentStatus.CREATED.value, PaymentStatus.AUTHORIZED.value})
+_OUTCOME_PROBLEMS = frozenset({Problem.NON_DELIVERY, Problem.WORK_REJECTED})
+
+
+def _is_delivery_outcome(result: MonitorResult) -> bool:
+    """An applied event that settles the evidence question: completed work, or failed / rejected delivery.
+    Progress events (shipped, placed) are not: re-settling on them would only burn verification attempts."""
+    if result.outcome is not EventOutcome.APPLIED:
+        return False
+    spec = get_plugin(result.event.domain).monitor
+    rule = spec.rule(result.event.event_type)
+    return result.event.event_type in spec.completed_event_types or (rule is not None and rule.problem in _OUTCOME_PROBLEMS)
 
 
 class MonitorWorker:
@@ -56,6 +70,11 @@ class MonitorWorker:
             metadata={"event_type": result.event.event_type, "problem": result.problem.value if result.problem else None},
         )
         try:
+            if _is_delivery_outcome(result) and await self._awaiting_evidence(run_id):
+                # A delivery outcome for an order whose settlement is waiting on evidence: settle again, which
+                # captures on confirmed delivery and voids on failure (never refund money that was only held).
+                await self._runs.retry_settlement(run_id)
+                return route
             match route:
                 case Route.CONTINUE_MONITORING:
                     pass
@@ -72,6 +91,10 @@ class MonitorWorker:
         except UnknownRun:
             logger.warning("monitor result for an unknown run", extra={"run_id": run_id})
         return route
+
+    async def _awaiting_evidence(self, run_id: str) -> bool:
+        state = await self._runs.state(run_id)
+        return state.get("status") == ExecutionState.AWAITING_CONFIRMATION.value and bool(state.get("payment_id"))
 
     async def release_for_cancel(self, run_id: str) -> bool:
         """The user cancelled: release whatever is committed through the Guard-gated payment service. True when
@@ -135,7 +158,7 @@ class MonitorWorker:
                         await self._runs.set_status(run_id, "release_blocked")
                         return False
                 return True  # already voided / refunded / failed: nothing is committed
-        except PaymentServiceError as exc:  # includes denied and not-ready: retried on the next event or sweep
+        except (PaymentServiceError, ProviderError) as exc:  # denied, not ready, PayPal unreachable: retried later
             audit.emit(Phase.MONITOR, "REPLAN_BLOCKED", node=_NODE, decision="release_failed", reason=str(exc))
             await self._runs.set_status(run_id, "release_blocked")
             return False
@@ -145,7 +168,7 @@ class MonitorWorker:
             permit, payment_id = await self._permit(run_id)
             async with session_scope(self._factory) as session:
                 decision = await request_refund(session, self._payments, payment_id, permit=permit, reason="non-delivery")
-        except PaymentServiceError as exc:
+        except (PaymentServiceError, ProviderError) as exc:
             audit.emit(Phase.MONITOR, "REMEDY_FAILED", node=_NODE, decision="failed", reason=str(exc))
             await self._runs.set_status(run_id, "remedy_blocked")
             return False

@@ -15,9 +15,10 @@ class Settings(BaseSettings):
     database_url: str = "postgresql://postgres:postgres@localhost:5432/aisling"
     checkpoint_sqlite_path: str = "checkpoints.sqlite"
 
-    llm_provider: str = "gemini"
+    llm_provider: str = "gemini"  # gemini | groq | cerebras | openrouter | openai_compat
     llm_model: str = "gemini-2.5-flash"
     llm_api_key: SecretStr | None = None
+    llm_base_url: str | None = None  # openai_compat only; groq/cerebras/openrouter have built-in defaults
     llm_timeout_seconds: float = 12.0  # per attempt; structured extraction/scoring answers are short
     llm_thinking_budget: int = 0  # Gemini 2.5 thinking tokens; 0 disables thinking (big latency win), -1 = model decides
     llm_temperature: float = 0.0

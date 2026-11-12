@@ -86,7 +86,18 @@ async def discovery_search_node(
 
     enriched = set(progress.enriched)
     unavailable = set(progress.unavailable)
-    found = [c for c in result.candidates if _key(c) not in unavailable]
+    # Downstream (Evaluator, selection, approval) identifies a candidate by ``candidate_id`` alone, so an id another
+    # platform already uses would make two different offers indistinguishable. The first one found keeps the id.
+    owner = {c.candidate_id: c.source for c in pool.values()}
+    clashes = [c for c in result.candidates if owner.get(c.candidate_id, c.source) != c.source]
+    for clash in clashes:
+        errors.append(f"{clash.source}: candidate id {clash.candidate_id!r} is already used by {owner[clash.candidate_id]}; skipped")
+        if audit:
+            audit.emit(
+                Phase.DISCOVERY, "CANDIDATE_ID_COLLISION", node="discovery", resource_type="candidate",
+                resource_id=clash.candidate_id, decision="skip", metadata={"source": clash.source, "kept": owner[clash.candidate_id]},
+            )
+    found = [c for c in result.candidates if _key(c) not in unavailable and c not in clashes]
     for candidate in found:  # dedupe by (source, id); an already-enriched record is richer, keep it
         if _key(candidate) not in enriched:
             pool[_key(candidate)] = candidate

@@ -17,7 +17,15 @@ def stop_report_node(state: TaskState, *, limits: GraphLimits, audit: AuditScope
     cause = breached(state, limits)
     coordinator = state.get("coordinator")
     stop = coordinator.stop_reason if coordinator and coordinator.stop_reason else None
-    reason = cause.value if cause else (stop.value if stop else state.get("status", "unknown"))
+    errors = state.get("errors") or []
+    if cause:
+        reason = cause.value
+    elif stop:
+        reason = stop.value
+    elif state.get("status") == "failed" and errors:
+        reason = errors[-1]  # the failing node's own explanation beats the bare status
+    else:
+        reason = state.get("status", "unknown")
     status = _KEEP_STATUS.get(state.get("status", ""), "stopped")
     if audit:
         audit.emit(Phase.PLAN, "TASK_STOPPED", node="stop_report", decision=status, reason=reason)

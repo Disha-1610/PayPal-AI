@@ -123,6 +123,25 @@ class RunController:
         )
         return await self.state(run_id)
 
+    async def fail(self, run_id: str, reason: str) -> TaskState:
+        """Record that an invocation crashed: the run ends through ``stop_report`` with status ``failed``, so the
+        checkpoint (not just a log line) says why and nothing still points at the node that raised. Use only where no
+        money can be committed (the first invocation); later failures keep their checkpoint for the Monitor."""
+        await (await self._graph_of(run_id)).aupdate_state(
+            self._config(run_id),
+            {"status": "failed", "stop_reason": reason, "errors": [reason], "pending_approval": None},
+            as_node="stop_report",
+        )
+        return await self.state(run_id)
+
+    async def retry_settlement(self, run_id: str) -> TaskState:
+        """Re-run ``settle`` for a run that ended waiting for fulfilment evidence (status ``awaiting_confirmation``).
+        Settlement is idempotent (same payment, same keys, permit re-verified): it captures on PASS evidence,
+        voids on FAIL, and otherwise keeps waiting; it never creates a new order or approval."""
+        graph = await self._graph_of(run_id)
+        await graph.aupdate_state(self._config(run_id), {}, as_node="await_payer")
+        return await self._invoke(graph, None, self._config(run_id))
+
     async def set_status(self, run_id: str, status: str) -> None:
         await (await self._graph_of(run_id)).aupdate_state(self._config(run_id), {"status": status})
 

@@ -93,6 +93,9 @@ async def call(
         except LLMError as exc:
             logger.error("llm_call_failed", extra={**meta, "error": str(exc)})
             raise LLMGatewayError(str(exc)) from exc
+        except Exception as exc:  # SDK-side bugs/schema rejections: one error contract for every agent
+            logger.error("llm_call_provider_exception", extra={**meta, "error": f"{type(exc).__name__}: {exc}"})
+            raise LLMGatewayError(f"{llm.name} provider failed: {type(exc).__name__}") from exc
         await _backoff(attempt, attempts)
 
     logger.error("llm_call_exhausted", extra={"output_model": output_model.__name__, "attempts": attempts})

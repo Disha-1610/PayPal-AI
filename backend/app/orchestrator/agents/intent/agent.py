@@ -55,8 +55,13 @@ class _Rejected(Exception):
 # --------------------------------------------------------------------------- validation
 
 
+_EDGE_PUNCTUATION = ".,;:!?\"'()[]"
+
+
 def _normalise(text: str) -> str:
-    return " ".join(text.lower().split())
+    """Case, whitespace and token-edge punctuation are not evidence: "Budget: 500." grounds "budget 500"."""
+    tokens = (t.strip(_EDGE_PUNCTUATION) for t in text.lower().split())
+    return " ".join(t for t in tokens if t)
 
 
 def _is_number(value: object) -> bool:
@@ -274,12 +279,13 @@ async def _call_checked[M: BaseModel, R](
 ) -> R:
     """Call the gateway, run ``check`` on the output, and retry once with the rejection reason.
 
-    The gateway gets a single transport retry so the two retry layers cannot stack to minutes.
+    Retries do not multiply: the first call gets one gateway (transport/parse) retry, the corrective call none,
+    so a run spends at most three model calls here.
     """
     current = prompt
     reason = ""
-    for _ in range(2):
-        output = await call(current, model, retries=1, provider=provider)
+    for attempt in range(2):
+        output = await call(current, model, retries=1 if attempt == 0 else 0, provider=provider)
         try:
             return check(output)
         except _Rejected as exc:

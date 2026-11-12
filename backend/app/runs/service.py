@@ -26,6 +26,7 @@ from app.domains import get_plugin
 from app.monitor.events.deadline import InvalidEvent, parse_instant
 from app.orchestrator.graph.runtime import RunController, RunSnapshot, UnknownRun
 from app.runs.view import (
+    QUESTION_NODES,
     TERMINAL_STATUSES,
     MessageView,
     RunView,
@@ -36,7 +37,7 @@ from app.runs.view import (
 )
 from app.schemas.authorization import Action, TaskAuthorization
 from app.schemas.monitor import Problem
-from app.schemas.state import make_initial_state
+from app.schemas.state import TaskState, make_initial_state
 
 logger = get_logger(__name__)
 _EVENT_POLL_SECONDS = 1.5
@@ -266,7 +267,7 @@ class RunService:
         if existing is not None:
             return message_view(existing)  # a retry: already accepted
         snapshot = await self._runs.snapshot(run_id)
-        if "ask_user" not in snapshot.next or run_id in self._resuming:
+        if not QUESTION_NODES & set(snapshot.next) or run_id in self._resuming:
             raise NotAwaiting("the run is not waiting for an answer")
         row = RunMessage(run_id=run_id, id=message_id, role="user", text=text, client_id=client_id)
         async with session_scope(self._factory) as session:
@@ -285,6 +286,23 @@ class RunService:
             raise NotAwaiting("the run is not waiting for the payer")
         self._resume_in_background(run_id, {"payer_returned": True})
         return True
+
+    async def ensure_awaiting_approval(self, run_id: str) -> None:
+        """Raise ``RunBusy`` / ``NotAwaiting`` unless the run is paused at the approval gate and nothing is resuming it."""
+        if run_id in self._resuming:
+            raise RunBusy(run_id)
+        if "await_approval" not in (await self._runs.snapshot(run_id)).next:
+            raise NotAwaiting("the run is not waiting for an approval")
+
+    async def resume_approval(self, run_id: str, value: object) -> TaskState:
+        """Resume a run paused at ``await_approval`` with the user's decision, inline (the caller returns the status).
+        Holds the same guard as every other resume, so a double-submitted decision cannot run the gate twice."""
+        await self.ensure_awaiting_approval(run_id)
+        self._resuming.add(run_id)
+        try:
+            return await self._runs.resume(run_id, value)
+        finally:
+            self._resuming.discard(run_id)
 
     async def cancel(self, user_id: str, run_id: str) -> bool:
         """Cancel a run that is paused (asking, awaiting approval, or awaiting the payer). Committed funds are released
@@ -338,7 +356,7 @@ class RunService:
             pass  # a concurrent observer stored the same question
 
     async def _set_status(self, run_id: str, status: str) -> None:
-        self._resuming.discard(run_id)
+        # Never touches ``_resuming``: only the task that runs the graph may release that guard (B2).
         async with session_scope(self._factory) as session:
             record = await session.get(RunRecord, run_id)
             if record is not None:
@@ -392,9 +410,23 @@ class RunService:
         try:
             final = await self._runs.start(initial)
             status = final.get("status", "running")
-        except Exception:
+        except Exception as exc:
             logger.exception("run failed to start", extra={"run_id": run_id})
+            await self._record_start_failure(run_id, exc)
+        finally:
+            self._resuming.discard(run_id)  # the graph is paused or finished: outside actions may proceed
         async with session_scope(self._factory) as session:
             record = await session.get(RunRecord, run_id)
             if record is not None:
                 record.status = status
+
+    async def _record_start_failure(self, run_id: str, exc: Exception) -> None:
+        """Make the checkpoint agree with the record: a crashed first invocation is ``failed``, never still running.
+        No money exists before the first invocation pauses, so ending the run here cannot strand funds."""
+        reason = f"the run stopped unexpectedly ({type(exc).__name__}); please start it again"
+        try:
+            await self._runs.fail(run_id, reason)
+        except UnknownRun:
+            pass  # nothing was checkpointed: the record alone says failed
+        except Exception:
+            logger.exception("could not record the run failure in its checkpoint", extra={"run_id": run_id})

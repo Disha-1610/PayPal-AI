@@ -29,6 +29,7 @@ from app.domains.contractor.milestone import (
 )
 from app.domains.contractor.schemas import MilestonePlan
 from app.orchestrator.executor.executor import ExecutionBlocked
+from app.payments.provider import ProviderError
 from app.payments.service import PaymentNotReady, PaymentPermit, PaymentServiceError
 from app.schemas.approval_terms import ApprovalTerms
 from app.schemas.authorization import Action, PendingApproval
@@ -170,6 +171,8 @@ async def pay_milestone_step(
         return {"status": STATUS_MILESTONE_FAILED, "errors": [f"milestone {seq} refused: {exc}"]}
     except PaymentServiceError as exc:
         return {"status": "payment_refused", "errors": [f"payment refused: {exc}"]}
+    except ProviderError as exc:
+        return {"status": "payment_refused", "errors": [f"payment provider error: {exc}"]}
     return {
         "order_id": order_id, "payment_id": str(placed.created.payment.id), "approval_url": placed.created.approval_url,
         "settle_attempt": 0, "status": "awaiting_payer",
@@ -193,6 +196,8 @@ async def settle_milestone_step(
         return {"status": "payer_pending", "errors": [str(exc)]}
     except PaymentServiceError as exc:
         return {"status": "payment_refused", "errors": [str(exc)]}
+    except ProviderError as exc:
+        return {"status": "payer_pending" if exc.uncertain else "payment_refused", "errors": [f"payment provider error: {exc}"]}
     except MilestoneError as exc:
         return {"status": STATUS_MILESTONE_FAILED, "errors": [f"milestone {seq}: {exc}"]}
     return {"settle_attempt": state.get("settle_attempt", 0) + 1, "status": settlement.state.value}

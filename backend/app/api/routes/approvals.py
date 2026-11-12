@@ -11,12 +11,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.api.deps import Principal, get_principal, get_runs, get_session_factory
+from app.api.deps import Principal, get_principal, get_run_service, get_runs, get_session_factory
 from app.audit.approvals import record_approval_received
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.db.session import session_scope
 from app.orchestrator.graph.runtime import RunController, UnknownRun
+from app.runs.service import NotAwaiting, RunBusy, RunService
 from app.orchestrator.guard.approval_guard import ApprovalError, approval_keys, approval_ttl, issue_approval
 
 router = APIRouter(tags=["approvals"])
@@ -42,8 +43,12 @@ async def submit_approval(
     body: ApprovalDecision,
     principal: Annotated[Principal, Depends(get_principal)],
     runs: Annotated[RunController, Depends(get_runs)],
+    service: Annotated[RunService, Depends(get_run_service)],
     factory: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
 ) -> ApprovalResponse:
+    # Ownership first: another user's run is indistinguishable from a missing one (same 404 as the run routes).
+    if await service.get(principal.user_id, run_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
     try:
         state = await runs.state(run_id)
     except UnknownRun as exc:
@@ -53,6 +58,11 @@ async def submit_approval(
         raise HTTPException(status.HTTP_409_CONFLICT, "no approval is pending for this run")
     if body.terms_hash != pending.terms_hash:  # the user saw terms that are no longer the pending ones
         raise HTTPException(status.HTTP_409_CONFLICT, "terms changed; review the current terms")
+
+    try:  # before anything is minted or audited: a duplicate submit must leave no trace
+        await service.ensure_awaiting_approval(run_id)
+    except (RunBusy, NotAwaiting) as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, "the run is not waiting for this approval") from exc
 
     approve = body.decision == "approve"
     approvals = []
@@ -78,7 +88,10 @@ async def submit_approval(
             session, run_id=run_id, pending=pending, user_id=principal.user_id, approved=approve,
             approval_ids=[a.approval_id for a in approvals],
         )
-    resumed = await runs.resume(
-        run_id, {"decision": body.decision, "approvals": [a.model_dump(mode="json") for a in approvals]}
-    )
+    try:
+        resumed = await service.resume_approval(
+            run_id, {"decision": body.decision, "approvals": [a.model_dump(mode="json") for a in approvals]}
+        )
+    except (RunBusy, NotAwaiting) as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, "the run is not waiting for this approval") from exc
     return ApprovalResponse(run_id=run_id, decision=body.decision, status=resumed.get("status"))

@@ -131,12 +131,11 @@ async def open_runtime(
 
     writer: AuditWriter = app.state.audit_writer
     registry = ConnectorRegistry(SqlTextStore(factory))
-    registry.register(
-        Channel3Connector(
-            settings.channel3_api_key.get_secret_value(), base_url=settings.channel3_base_url,
-            country=settings.channel3_country, currency=settings.channel3_currency, timeout=settings.channel3_timeout_seconds,
-        )
+    channel3 = Channel3Connector(
+        settings.channel3_api_key.get_secret_value(), base_url=settings.channel3_base_url,
+        country=settings.channel3_country, currency=settings.channel3_currency, timeout=settings.channel3_timeout_seconds,
     )
+    registry.register(channel3)
     payments = PaymentService(paypal)
     observer = ConnectorTermsObserver(registry)
     executor = Executor(payments, observer, MonitorEventEvidence(observer, factory))
@@ -220,3 +219,7 @@ async def open_runtime(
         if counterparty is not None:
             await counterparty.aclose()
         await paypal.aclose()
+        await channel3.aclose()
+        close_provider = getattr(provider, "aclose", None)  # OpenAI-compatible providers own an HTTP pool
+        if close_provider is not None:
+            await close_provider()

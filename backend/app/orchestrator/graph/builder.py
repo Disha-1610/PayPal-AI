@@ -28,11 +28,12 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.audit.events import AuditScope, AuditSink
+from app.audit.events import AuditScope, AuditSink, Phase
 from app.connectors.registry import ConnectorRegistry
 from app.db.base import utcnow
 from app.db.session import session_scope
 from app.domains.base import DomainPlugin
+from app.llm.gateway import LLMGatewayError
 from app.llm.providers import LLMProvider
 from app.orchestrator.agents.adapt.node import adapt_node, ask_user_node
 from app.orchestrator.agents.coordinator.agent import CoordinatorResult, coordinate
@@ -44,7 +45,8 @@ from app.orchestrator.agents.discovery.agent import (
     discovery_start_node,
 )
 from app.orchestrator.agents.evaluator.agent import evaluator_node
-from app.orchestrator.agents.intent.agent import extract_intent, to_state_update
+from app.orchestrator.agents.coordinator.plan import build_plan
+from app.orchestrator.agents.intent.agent import IntentError, extract_intent, to_state_update
 from app.orchestrator.executor.executor import ExecutionBlocked, Executor
 from app.orchestrator.executor.state import ExecutionState
 from app.orchestrator.graph.approval import await_approval_node, request_approval_node
@@ -88,6 +90,7 @@ from app.orchestrator.router.intent import IntentRoute, route_intent
 from app.orchestrator.router.negotiator import route_negotiation
 from app.orchestrator.router.limits import GraphLimits, LimitRoute, route_limits
 from app.orchestrator.router.payment import PaymentRoute, route_payment_error
+from app.payments.provider import ProviderError
 from app.payments.service import PaymentPermit, PaymentServiceError
 from app.schemas.adapt import RecoveryStep
 from app.schemas.approval_terms import ApprovalTerms
@@ -98,6 +101,7 @@ from app.schemas.coordinator import CoordinatorEvent, Trigger
 from app.schemas.discovery import DiscoveryPolicy, DiscoveryRoute
 from app.schemas.evaluator import TextSource
 from app.schemas.intent import IntentResult, IntentStatus
+from app.schemas.recheck import MismatchAction
 from app.schemas.negotiator import NegotiatorPolicy, NegotiatorRoute
 from app.schemas.state import TaskState
 
@@ -155,19 +159,32 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
     # ---- intent / user loop ------------------------------------------------------------------------
 
     async def intent(state: TaskState) -> dict[str, object]:
-        result, diff = await extract_intent(state["original_intent"], d.plugin, provider=d.provider, audit=scope(state))
-        return {**to_state_update(result, diff), "domain": d.plugin.name}
+        # The plan template is the Coordinator's replanning surface; it is laid down once, on the first entry.
+        plan = {} if state.get("plan") else build_plan(d.plugin, audit=scope(state))
+        try:
+            result, diff = await extract_intent(state["original_intent"], d.plugin, provider=d.provider, audit=scope(state))
+        except (LLMGatewayError, IntentError) as exc:
+            # No deterministic fallback can invent the user's goal: fail the run in the checkpoint, not in a log line.
+            scope(state).emit(Phase.INTENT, "INTENT_FAILED", node="intent", decision="failed", reason=str(exc))
+            return {**plan, "status": "failed", "errors": [f"could not understand the request: {exc}"], "domain": d.plugin.name}
+        return {**plan, **to_state_update(result, diff), "domain": d.plugin.name}
 
     def after_intent(state: TaskState) -> str:
+        if state.get("status") == "failed":
+            return "stop_report"
         result = IntentResult(status=IntentStatus(state["status"]), goal=state.get("goal", ""), constraints=())
         route = route_intent(result, audit=scope(state))
-        return {IntentRoute.DISCOVERY: "discovery_start", IntentRoute.ASK_USER: "adapt", IntentRoute.REPORT: "stop_report"}[route]
+        return {IntentRoute.DISCOVERY: "discovery_start", IntentRoute.ASK_USER: "ask_user", IntentRoute.REPORT: "stop_report"}[route]
 
     async def ask_user(state: TaskState) -> dict[str, object]:
         return await ask_user_node(state, plugin=d.plugin, provider=d.provider, audit=scope(state))
 
     def after_ask_user(state: TaskState) -> str:
-        return "stop_report" if state.get("status") in {"failed", "cancelled"} else "discovery_start"
+        status = state.get("status")
+        if status in {"failed", "cancelled", IntentStatus.OUT_OF_SCOPE.value}:
+            return "stop_report"
+        # Still ambiguous or conflicting after the reply: ask again (each round waits on the user, it never spins).
+        return "ask_user" if status == IntentStatus.BLOCKED.value else "discovery_start"
 
     def adapt(state: TaskState) -> dict[str, object]:
         return adapt_node(state, plugin=d.plugin, now=d.now(), audit=scope(state))
@@ -247,6 +264,8 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
 
     def after_evaluate(state: TaskState) -> str:
         route = route_evaluation(state["evaluation"], audit=scope(state))
+        if route is EvaluatorRoute.EXECUTE and state["evaluation"].needs_choice:
+            return "choose_candidate"  # near-tie: the user picks, the code never breaks the tie silently
         return {EvaluatorRoute.EXECUTE: "select", EvaluatorRoute.SEARCH: "discovery_start", EvaluatorRoute.COORDINATOR: "coordinator"}[route]
 
     async def coordinator(state: TaskState) -> dict[str, object]:
@@ -261,13 +280,32 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
             CoordinatorResult(progress.last_action or CoordinatorAction.ASK_USER, "persisted", stop_reason=progress.stop_reason)
         )
         return {
-            CoordinatorRoute.SEARCH: "discovery_start", CoordinatorRoute.SWITCH_CANDIDATE: "switch_candidate",
+            # WIDEN/REPLAN go through Adapt's recovery ladder (local -> cross-domain -> relaxation the user approves):
+            # re-running discovery with unchanged constraints would only repeat the same pool.
+            CoordinatorRoute.SEARCH: "adapt", CoordinatorRoute.SWITCH_CANDIDATE: "switch_candidate",
             CoordinatorRoute.ASK_USER: "adapt", CoordinatorRoute.STOP: "stop_report",
         }[route]
 
     def select(state: TaskState) -> dict[str, object]:
         ranked = state["evaluation"].ranked
         return {"selected_candidate_id": ranked[0].candidate_id, "status": "selected"}
+
+    def choose_candidate(state: TaskState) -> dict[str, object]:
+        """Pause for the user's pick among near-tied candidates. Nothing above ``interrupt`` has side effects."""
+        ranked = [r.candidate_id for r in state["evaluation"].ranked]
+        titles = {c.candidate_id: c.title for c in state.get("candidates", [])}
+        lines = [f"{i}. {titles.get(cid, cid)[:80]}" for i, cid in enumerate(ranked, start=1)]
+        raw = interrupt({
+            "type": "candidate_choice", "options": ranked,
+            "message": "These options are nearly tied. Reply with the number of the one you want:\n" + "\n".join(lines),
+        })
+        picked = _pick_candidate(raw, ranked)
+        if picked is None:
+            return {"status": "choice_invalid", "errors": ["the reply did not name one of the offered options"]}
+        return {"selected_candidate_id": picked, "status": "selected"}
+
+    def after_choose(state: TaskState) -> str:
+        return "guard_execute" if state.get("status") == "selected" else "choose_candidate"
 
     def switch_candidate(state: TaskState) -> dict[str, object]:
         ids = [r.candidate_id for r in state["evaluation"].ranked]
@@ -325,6 +363,8 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
                     return {"recheck_report": blocked.report, "status": "blocked"}
         except PaymentServiceError as exc:
             return {"errors": [f"payment refused: {exc}"], "status": "payment_refused"}
+        except ProviderError as exc:  # PayPal refused or was unreachable; no funds are held before authorization
+            return {"errors": [f"payment provider error: {exc}"], "status": "payment_refused"}
         return {
             "order_id": order_id, "payment_id": str(placed.created.payment.id), "approval_url": placed.created.approval_url,
             "settle_attempt": 0, "status": "awaiting_payer",
@@ -333,7 +373,10 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
 
     def after_place_order(state: TaskState) -> str:
         if state.get("status") == "blocked":
-            return _executor_target(route_execution(state["recheck_report"], audit=scope(state)))
+            report = state["recheck_report"]
+            if report.action is MismatchAction.REAPPROVE:
+                return "guard_execute"  # approval no longer matches: through the Guard, re-check live terms, ask again
+            return _executor_target(route_execution(report, audit=scope(state)))
         return "adapt" if state.get("status") == "payment_refused" else "await_payer"
 
     def await_payer(state: TaskState) -> dict[str, object]:
@@ -357,6 +400,9 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
         except PaymentServiceError as exc:
             route = route_payment_error(exc)
             return {"status": "payer_pending" if route is PaymentRoute.WAIT else "payment_refused", "errors": [str(exc)]}
+        except ProviderError as exc:
+            # Uncertain (timeout/5xx): the service re-reads PayPal and replays the same keys, so settling again is safe.
+            return {"status": "payer_pending" if exc.uncertain else "payment_refused", "errors": [f"payment provider error: {exc}"]}
         return {"settle_attempt": attempt, "status": settlement.state.value}
 
     def after_settle(state: TaskState) -> str:
@@ -463,7 +509,7 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
     for name, node in {
         "intent": intent, "ask_user": ask_user, "adapt": adapt, "discovery_start": discovery_start,
         "discovery_search": discovery_search, "discovery_adapt": discovery_adapt, "discovery_advance": discovery_advance,
-        "discovery_finish": discovery_finish, "evaluate": evaluate, "coordinator": coordinator, "select": select,
+        "discovery_finish": discovery_finish, "evaluate": evaluate, "coordinator": coordinator, "select": select, "choose_candidate": choose_candidate,
         "switch_candidate": switch_candidate, "recheck": recheck, "request_approval": request_approval,
         "await_approval": await_approval_node, "place_order": place_order, "await_payer": await_payer, "settle": settle,
         "monitor_intake": monitor_intake, "guard_negotiate": guard_negotiate, "negotiate": negotiate,
@@ -476,16 +522,17 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
         graph.add_node(name, node if name.startswith("await_") else timed(name, node))
 
     graph.add_edge(START, "intent")
-    graph.add_conditional_edges("intent", after_intent, ["discovery_start", "adapt", "stop_report"])
+    graph.add_conditional_edges("intent", after_intent, ["discovery_start", "ask_user", "stop_report"])
     graph.add_conditional_edges("adapt", after_adapt, ["ask_user", "discovery_start", "stop_report"])
-    graph.add_conditional_edges("ask_user", after_ask_user, ["discovery_start", "stop_report"])
+    graph.add_conditional_edges("ask_user", after_ask_user, ["discovery_start", "ask_user", "stop_report"])
     graph.add_conditional_edges("discovery_start", after_discovery_start, ["discovery_search", "stop_report"])
     for name in ("discovery_search", "discovery_adapt", "discovery_advance"):
         graph.add_conditional_edges(name, after_discovery, ["discovery_search", "discovery_adapt", "discovery_advance", "discovery_finish"])
     graph.add_edge("discovery_finish", "guard_evaluate")
     graph.add_conditional_edges("guard_evaluate", guarded("evaluate"), ["evaluate", "stop_report"])
-    graph.add_conditional_edges("evaluate", after_evaluate, ["select", "discovery_start", "coordinator"])
-    graph.add_conditional_edges("coordinator", after_coordinator, ["discovery_start", "switch_candidate", "adapt", "stop_report"])
+    graph.add_conditional_edges("evaluate", after_evaluate, ["select", "choose_candidate", "discovery_start", "coordinator"])
+    graph.add_conditional_edges("choose_candidate", after_choose, ["guard_execute", "choose_candidate"])
+    graph.add_conditional_edges("coordinator", after_coordinator, ["switch_candidate", "adapt", "stop_report"])
     graph.add_edge("select", "guard_execute")
     graph.add_conditional_edges("switch_candidate", after_switch, ["guard_execute", "stop_report"])
     graph.add_conditional_edges(
@@ -503,7 +550,7 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
     graph.add_conditional_edges("milestone_next", after_milestone_next, ["request_approval", "stop_report", END])
     graph.add_conditional_edges("milestone_pay", after_milestone_pay, ["await_payer", "stop_report"])
     graph.add_edge("stop_report", END)
-    graph.add_conditional_edges("place_order", after_place_order, ["await_payer", "evaluate", "adapt"])
+    graph.add_conditional_edges("place_order", after_place_order, ["await_payer", "guard_execute", "evaluate", "adapt"])
     graph.add_edge("await_payer", "settle")
     graph.add_edge("monitor_intake", "adapt")
     graph.add_conditional_edges(
@@ -515,6 +562,15 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
     graph.add_conditional_edges("await_counterparty", after_counterparty, ["guard_negotiate", "stop_report"])
     graph.add_edge("negotiation_intake", "guard_negotiate")
     return graph.compile(checkpointer=checkpointer)
+
+
+def _pick_candidate(raw: object, ranked: list[str]) -> str | None:
+    """The user's reply as a 1-based option number or an exact candidate id; anything else picks nothing."""
+    text = str(raw.get("text", "")) if isinstance(raw, dict) else str(raw)
+    text = text.strip().rstrip(".")
+    if text.isdigit() and 1 <= int(text) <= len(ranked):
+        return ranked[int(text) - 1]
+    return text if text in ranked else None
 
 
 def _executor_target(route: ExecutorRoute) -> str:
