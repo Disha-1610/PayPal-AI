@@ -147,7 +147,8 @@ class PaymentService:
             order = await self._provider.get_order(payment.provider_order_id)
             return CreatedPayment(payment, order.approval_url)
         order = await self._provider.create_order(
-            request_id=key, amount=amount, currency=approval.currency, payee_id=payee_id, reference=str(payment.id)
+            request_id=key, amount=amount, currency=approval.currency, payee_id=payee_id, reference=str(payment.id),
+            run_id=payment.run_id,
         )
         _check_order(order, amount=amount, currency=approval.currency, payee_id=payee_id)
         payment.provider_order_id = order.order_id

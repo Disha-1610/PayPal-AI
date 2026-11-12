@@ -53,7 +53,7 @@ CONFIG = {"configurable": {"thread_id": RUN}}
 class Provider(FakeProvider):
     """One in-memory PayPal order per milestone: each new order starts unapproved."""
 
-    async def create_order(self, *, request_id, amount, currency, payee_id, reference):
+    async def create_order(self, *, request_id, amount, currency, payee_id, reference, run_id=None):
         if f"create:{request_id}" not in self.seen:
             self.order_status = "created"
         return await super().create_order(

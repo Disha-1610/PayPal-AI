@@ -61,7 +61,7 @@ class ProviderRefund(BaseModel):
 
 class PaymentProvider(Protocol):
     async def create_order(
-        self, *, request_id: str, amount: Decimal, currency: str, payee_id: str, reference: str
+        self, *, request_id: str, amount: Decimal, currency: str, payee_id: str, reference: str, run_id: str | None = None
     ) -> ProviderOrder: ...
 
     async def get_order(self, order_id: str) -> ProviderOrder: ...

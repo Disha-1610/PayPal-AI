@@ -61,6 +61,10 @@ def to_listing(product: Product) -> Listing:
     return Listing(candidate=candidate, description=product.description)
 
 
+class _RejectedRequest(ConnectorError):
+    """Channel3 refused the request itself (HTTP 400), e.g. a filter value outside its fixed vocabulary."""
+
+
 class Channel3Connector:
     id = CONNECTOR_ID
     domain = "shopping"
@@ -125,6 +129,9 @@ class Channel3Connector:
             raise ConnectorError(f"{self.id}: not found")
         if response.status_code == 429:
             raise ConnectorError(f"{self.id}: rate limited")
+        if response.status_code == 400:
+            logger.warning("channel3 %s %s -> 400", method, path)
+            raise _RejectedRequest(f"{self.id}: request rejected")
         if response.status_code >= 400:
             logger.warning("channel3 %s %s -> %s", method, path, response.status_code)
             raise ConnectorError(f"{self.id}: upstream error {response.status_code}")
@@ -137,13 +144,26 @@ class Channel3Connector:
         if isinstance(budget, (int, float)) and not isinstance(budget, bool):
             filters["price"] = {"max_price": budget}
         color = request.filters.get("color")
-        if isinstance(color, str):
-            filters["attributes"] = {"color": [color]}
+        if isinstance(color, str) and color.strip():
+            # Channel3 accepts only its own capitalised colour names ("Black", not "black").
+            filters["attributes"] = {"color": [color.strip().title()]}
         if filters:
             body["filters"] = filters
         if self._config:
             body["config"] = self._config
-        response = await self._request("POST", "/v1/search", json=body)
+        try:
+            response = await self._request("POST", "/v1/search", json=body)
+        except _RejectedRequest:
+            if "attributes" not in filters:
+                raise
+            # A colour outside Channel3's vocabulary: search again with the colour in the query text instead.
+            filters.pop("attributes")
+            retry = {**body, "query": f"{color} {request.query}"}
+            if filters:
+                retry["filters"] = filters
+            else:
+                retry.pop("filters", None)
+            response = await self._request("POST", "/v1/search", json=retry)
         try:
             wire = WireSearchResponse.model_validate(response.json())
         except (ValueError, ValidationError):

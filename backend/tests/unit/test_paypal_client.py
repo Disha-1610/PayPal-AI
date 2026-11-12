@@ -141,3 +141,11 @@ async def test_reauthorize_posts_amount_with_idempotency_key_and_returns_the_new
     assert request.headers["PayPal-Request-Id"] == "k5"
     assert json.loads(request.content) == {"amount": {"currency_code": "INR", "value": "5200.00"}}
     assert (renewed.authorization_id, renewed.status, renewed.amount) == ("AUTH-2", "created", Decimal(5200))
+
+
+async def test_create_order_sends_the_payer_back_to_the_runs_return_page():
+    paypal, seen = client(lambda r: httpx.Response(201, json=ORDER))
+    await paypal.create_order(request_id="k1", amount=Decimal(5), currency="USD", payee_id="M1", reference="pay-1", run_id="run-9")
+    context = json.loads(seen[-1].content)["payment_source"]["paypal"]["experience_context"]
+    assert context["return_url"] == "http://localhost:3000/runs/run-9/payment-return"
+    assert context["cancel_url"] == "http://localhost:3000/runs/run-9/payment-return?cancelled=1"

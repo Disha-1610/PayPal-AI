@@ -75,7 +75,7 @@ async def test_search_sends_key_and_mapped_filters_and_normalizes():
     assert seen["body"] == {
         "query": "shoes",
         "limit": 30,
-        "filters": {"price": {"max_price": 150}, "attributes": {"color": ["white"]}},
+        "filters": {"price": {"max_price": 150}, "attributes": {"color": ["White"]}},
         "config": {"currency": "USD"},
     }
     listing = response.listings[0]
@@ -177,3 +177,30 @@ def test_listing_links_to_the_cheapest_in_stock_offer_and_drops_non_http_links()
     assert to_listing(Product.model_validate(linked)).candidate.product_url == "https://b.com/p"
     unsafe = {**PRODUCT, "offers": [{**PRODUCT["offers"][1], "url": "javascript:alert(1)"}]}
     assert to_listing(Product.model_validate(unsafe)).candidate.product_url is None
+
+
+async def test_colour_outside_channel3_vocabulary_retries_with_the_colour_in_the_query():
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        if "attributes" in bodies[-1].get("filters", {}):
+            return httpx.Response(400, json={"detail": "Values are not valid for attribute 'color'."})
+        return httpx.Response(200, json={"products": [PRODUCT]})
+
+    c = connector(handler)
+    response = await c.execute("search", SearchRequest(query="jacket", domain="shopping", filters={"budget": 90, "color": "midnight"}))
+    assert len(response.listings) == 1 and len(bodies) == 2
+    assert bodies[1] == {"query": "midnight jacket", "limit": 10, "filters": {"price": {"max_price": 90}}}
+
+
+async def test_a_rejected_request_without_a_colour_filter_is_not_retried():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(400, json={"detail": "bad"})
+
+    with pytest.raises(ConnectorError):
+        await connector(handler).execute("search", SearchRequest(query="jacket", domain="shopping"))
+    assert len(calls) == 1

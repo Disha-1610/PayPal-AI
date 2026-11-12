@@ -116,6 +116,19 @@ def background_dispatch(worker: MonitorWorker, tasks: set[asyncio.Task[object]])
     return dispatch
 
 
+async def _drain(
+    stop: asyncio.Event, workers: list[asyncio.Task[None]], background: set[asyncio.Task[object]], run_service: RunService | None
+) -> None:
+    """Stop the periodic workers and wait for in-flight graph work. Safe to call twice."""
+    stop.set()
+    for task in workers:
+        with suppress(asyncio.CancelledError):
+            await task
+    await asyncio.gather(*background, return_exceptions=True)
+    if run_service is not None:
+        await run_service.aclose()
+
+
 @asynccontextmanager
 async def open_runtime(
     app: FastAPI, settings: Settings, *, factory: async_sessionmaker[AsyncSession] = SessionFactory
@@ -207,15 +220,13 @@ async def open_runtime(
             logger.info(
                 "runtime ready", extra={"platforms": sorted(registry.connector_ids), "domains": sorted({SHOPPING.name, *engagement_deps})}
             )
-            yield
+            try:
+                yield
+            finally:
+                # Drain everything that reads checkpoints while the checkpointer connection is still open.
+                await _drain(stop, workers, background, run_service)
     finally:
-        stop.set()
-        for task in workers:
-            with suppress(asyncio.CancelledError):
-                await task
-        await asyncio.gather(*background, return_exceptions=True)
-        if run_service is not None:
-            await run_service.aclose()
+        await _drain(stop, workers, background, run_service)  # no-op when already drained; covers a failed startup
         if counterparty is not None:
             await counterparty.aclose()
         await paypal.aclose()

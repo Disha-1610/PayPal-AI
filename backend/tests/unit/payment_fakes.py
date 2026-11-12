@@ -45,7 +45,7 @@ class FakeProvider:
             authorization_id="auth-1" if authorized else None,
         )
 
-    async def create_order(self, *, request_id, amount, currency, payee_id, reference):
+    async def create_order(self, *, request_id, amount, currency, payee_id, reference, run_id=None):
         self.amount, self.currency, self.payee = amount, currency, payee_id
         return self._once("create", request_id, self._order)
 

@@ -30,6 +30,7 @@ class Settings(BaseSettings):
 
     # Browser access (CORS) and user authentication.
     cors_origins: str = "http://localhost:3000"  # comma-separated exact origins; credentials are allowed for these only
+    app_base_url: str = "http://localhost:3000"  # the web app; PayPal sends the payer back here after checkout
     session_signing_key: SecretStr | None = None  # HMAC key for the sandbox session cookie (>= 32 chars)
     session_ttl_seconds: int = 8 * 3600
     auth_sandbox_enabled: bool = False  # anonymous sandbox sign-in; honoured only when environment == "development"

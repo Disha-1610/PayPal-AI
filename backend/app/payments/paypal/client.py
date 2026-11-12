@@ -9,6 +9,7 @@ import time
 from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from pydantic import ValidationError
@@ -26,7 +27,9 @@ from app.schemas.approval_terms import minor_exponent
 
 logger = get_logger(__name__)
 
-_ORDER_STATUS = {"CREATED": "created", "APPROVED": "payer_approved", "COMPLETED": "authorized", "VOIDED": "voided"}
+_ORDER_STATUS = {
+    "CREATED": "created", "PAYER_ACTION_REQUIRED": "created",  # the latter when a return URL is set
+    "APPROVED": "payer_approved", "COMPLETED": "authorized", "VOIDED": "voided"}
 _AUTH_STATUS = {
     "CREATED": "created", "CAPTURED": "captured", "PARTIALLY_CAPTURED": "partially_captured",
     "VOIDED": "voided", "EXPIRED": "expired",
@@ -48,6 +51,7 @@ class PayPalClient:
         if not settings.paypal_client_id or settings.paypal_client_secret is None:
             raise ProviderError("PayPal credentials are not configured")
         self._webhook_id = settings.paypal_webhook_id
+        self._app_base_url = settings.app_base_url.rstrip("/")
         self._client_id = settings.paypal_client_id
         self._secret = settings.paypal_client_secret
         self._http = http or httpx.AsyncClient(base_url=settings.paypal_base_url, timeout=settings.paypal_timeout_seconds)
@@ -60,9 +64,9 @@ class PayPalClient:
     # ---- PaymentProvider ----------------------------------------------------------------------
 
     async def create_order(
-        self, *, request_id: str, amount: Decimal, currency: str, payee_id: str, reference: str
+        self, *, request_id: str, amount: Decimal, currency: str, payee_id: str, reference: str, run_id: str | None = None
     ) -> ProviderOrder:
-        body = {
+        body: dict[str, Any] = {
             "intent": "AUTHORIZE",
             "purchase_units": [
                 {
@@ -73,6 +77,13 @@ class PayPalClient:
                 }
             ],
         }
+        if run_id:
+            # Without these PayPal has nowhere to send the payer after approval and shows its generic error page.
+            # The return page only reloads the run: payment state is always re-read from PayPal server-side.
+            back = f"{self._app_base_url}/runs/{quote(run_id, safe='')}/payment-return"
+            body["payment_source"] = {
+                "paypal": {"experience_context": {"return_url": back, "cancel_url": f"{back}?cancelled=1", "user_action": "CONTINUE"}}
+            }
         data = await self._request("POST", "/v2/checkout/orders", request_id=request_id, json=body, headers=_FULL_BODY)
         return _parse(_order, data)
 

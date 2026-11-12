@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from app.audit.events import AuditScope, Phase
 from app.connectors.base import (
     CandidateRequest,
+    Capability,
     ConnectorError,
     DeliveryRequest,
     ReviewsRequest,
@@ -49,17 +50,23 @@ async def enrich_candidate(
     """The enriched candidate, or ``None`` when the platform says it is out of stock."""
     source = candidate.source
     request = CandidateRequest(candidate_id=candidate.candidate_id)
+    def offers(capability: Capability) -> bool:  # skip what the platform cannot answer instead of logging an error
+        return registry.supports(source, capability)
+
+    details_call = registry.details(auth, source, request) if offers(Capability.DETAILS) else None
+    reviews_call = (
+        registry.reviews(auth, source, ReviewsRequest(candidate_id=candidate.candidate_id, limit=reviews_limit))
+        if offers(Capability.REVIEWS)
+        else None
+    )
+    stock_call = registry.stock(auth, source, request) if offers(Capability.STOCK) else None
     delivery_call = (
         registry.delivery(auth, source, DeliveryRequest(candidate_id=candidate.candidate_id, destination=destination))
-        if destination
+        if destination and offers(Capability.DELIVERY)
         else None
     )
     details, reviews, stock, delivery = await asyncio.gather(
-        _attempt(registry.details(auth, source, request), errors),
-        _attempt(
-            registry.reviews(auth, source, ReviewsRequest(candidate_id=candidate.candidate_id, limit=reviews_limit)), errors
-        ),
-        _attempt(registry.stock(auth, source, request), errors),
+        _attempt(details_call, errors), _attempt(reviews_call, errors), _attempt(stock_call, errors),
         _attempt(delivery_call, errors),
     )
     if stock is not None and not stock.available:

@@ -492,3 +492,23 @@ async def test_every_step_is_audited(store):
     routed = [e for e in sink.events if e.action == "DISCOVERY_ROUTED"]
     assert [e.decision for e in routed] == [r.value for r in out.routes]  # every routing decision is on the record
     assert all(e.phase == "discovery" for e in sink.events if e.action.startswith(("DISCOVERY_", "QUERY_", "CANDIDATE_")))
+
+
+async def test_enrichment_skips_capabilities_the_platform_does_not_offer(store):
+    from app.connectors.mocks.flipkart import build_mock_flipkart
+    from app.orchestrator.agents.discovery.enrich import enrich_candidate
+
+    full = build_mock_flipkart()
+    no_reviews = FixtureConnector(
+        id=full.id, domain=full.domain, capabilities=specs(Capability.SEARCH, Capability.DETAILS),
+        listings=tuple(full._listings.values()),
+    )
+    registry = make_registry(store, no_reviews)
+    candidate = next(iter(full._listings.values())).candidate
+    errors: list[str] = []
+    enriched = await enrich_candidate(
+        registry, make_auth({full.id}), candidate, destination=None, reviews_limit=5, errors=errors
+    )
+    assert enriched is not None and errors == []
+    assert registry.supports(full.id, Capability.DETAILS) and not registry.supports(full.id, Capability.REVIEWS)
+    assert not registry.supports("nope", Capability.SEARCH)

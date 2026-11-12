@@ -92,6 +92,11 @@ class ConnectorRegistry:
     def connector_ids(self) -> frozenset[str]:
         return frozenset(self._connectors)
 
+    def supports(self, connector_id: str, capability: Capability) -> bool:
+        """Whether the connector declares this capability (an unknown connector supports nothing)."""
+        connector = self._connectors.get(connector_id)
+        return connector is not None and any(s.name == capability.value for s in connector.capabilities)
+
     def scoped(self, auth: TaskAuthorization, domain: str | None = None) -> list[Connector]:
         """Registered connectors the task may use. The hard platform scope (2.2)."""
         return [
