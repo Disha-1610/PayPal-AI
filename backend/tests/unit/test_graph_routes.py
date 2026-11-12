@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 
 from conftest import FakeProvider
+from app.llm.providers import LLMResponse
 from langgraph.types import Command
 
 from app.connectors.base import Capability, specs
@@ -15,8 +16,9 @@ from app.orchestrator.agents.discovery.agent import discovery_search_node
 from app.orchestrator.graph.builder import _pick_candidate
 from app.schemas.coordinator import Action as CoordinatorAction
 from app.schemas.coordinator import CoordinatorProgress
-from app.schemas.evaluator import EvaluationReport, EvaluatorOutcome, LLMStatus, RankedViable
-from app.runs.view import question_text
+from app.schemas.evaluation import RejectionKind
+from app.schemas.evaluator import EvaluationReport, EvaluatorOutcome, LLMStatus, RankedViable, RejectedCandidate
+from app.runs.view import can_revise, question_text
 from app.orchestrator.graph.runtime import RunSnapshot
 from tests.unit.graph_harness import controller, extraction, initial
 from tests.unit.test_connectors import MemoryTextStore, make_registry
@@ -95,11 +97,11 @@ async def _paused_after_evaluate(report: EvaluationReport):
 
 
 async def test_near_tie_pauses_for_the_users_choice_and_selects_it():
-    runs = await _paused_after_evaluate(_report("amz-1", "amz-2", needs_choice=True))
+    runs = await _paused_after_evaluate(_report("amz-2", "amz-1", needs_choice=True))
     snap = await runs.snapshot("r1")
     assert snap.next == ("choose_candidate",) and "1." in question_text(snap)
     snap = await _settle(runs, "2")
-    assert snap.values["selected_candidate_id"] == "amz-2"
+    assert snap.values["selected_candidate_id"] == "amz-1"
 
 
 async def test_clear_winner_is_selected_without_asking():
@@ -154,16 +156,16 @@ async def _resume_quietly(runs) -> None:
 
 
 async def test_declined_product_lets_the_user_pick_another_instead_of_ending_the_run():
-    runs = await _paused_after_evaluate(_report("amz-1", "amz-2", "amz-3", needs_choice=False))
-    update = {"selected_candidate_id": "amz-1", "status": "approval_rejected", "pending_approval": None}
+    runs = await _paused_after_evaluate(_report("amz-2", "amz-1", needs_choice=False))
+    update = {"selected_candidate_id": "amz-2", "status": "approval_rejected", "pending_approval": None}
     await runs._graph.aupdate_state(CONFIG, update, as_node="await_approval")
     await _resume_quietly(runs)
     snap = await runs.snapshot("r1")
-    assert snap.next == ("choose_candidate",) and snap.values["declined_candidate_ids"] == ["amz-1"]
+    assert snap.next == ("choose_candidate",) and snap.values["declined_candidate_ids"] == ["amz-2"]
     text = question_text(snap)
-    assert "2." in text and "3." not in text  # the declined product is not offered again
+    assert "1." in text and "2." not in text  # the declined product is not offered again
     snap = await _settle(runs, "1")
-    assert snap.values["selected_candidate_id"] == "amz-2"
+    assert snap.values["selected_candidate_id"] == "amz-1"
 
 
 async def test_declining_the_only_product_ends_the_run():
@@ -178,3 +180,77 @@ async def test_declining_the_only_product_ends_the_run():
 def test_choice_parsing_accepts_an_exact_title():
     assert _pick_candidate("beta phone", ["a", "b"], {"a": "Alpha", "b": "Beta Phone"}) == "b"
     assert _pick_candidate("phone", ["a", "b"], {"a": "Alpha", "b": "Beta Phone"}) is None
+
+
+# ---- warnings instead of rejections; changing the requirements re-runs the pipeline ----------------------------
+
+class _ScriptedThenPatch(FakeProvider):
+    """Scripted answers first; afterwards every call gets an empty requirement patch (no change)."""
+
+    async def generate(self, prompt, output_model):
+        if self.steps:
+            return await super().generate(prompt, output_model)
+        self.prompts.append(prompt)
+        return LLMResponse(text=json.dumps({"ops": []}), model=self.model, input_tokens=5, output_tokens=3)
+
+
+def _none_viable(*warned: str) -> EvaluationReport:
+    rejected = tuple(
+        RejectedCandidate(candidate_id=i, kind=RejectionKind.UNVERIFIABLE, fields=("deadline",), reason="cannot verify: deadline")
+        for i in warned
+    )
+    return EvaluationReport(
+        outcome=EvaluatorOutcome.NONE_VIABLE, reason="none", attempt=2, rejected=rejected, llm_status=LLMStatus.SKIPPED,
+        evaluated_at=datetime.now(UTC),
+    )
+
+
+async def test_nothing_viable_offers_the_warned_candidates_instead_of_stopping():
+    runs = await _paused_after_evaluate(_none_viable("amz-1", "amz-2"))
+    snap = await runs.snapshot("r1")
+    text = question_text(snap)
+    assert snap.next == ("choose_candidate",)
+    assert "No product meets all" in text and "warning: cannot verify: deadline" in text and "over your budget" in text
+    snap = await _settle(runs, "1")
+    assert snap.values["selected_candidate_id"] == "amz-1"
+
+
+async def test_a_warned_candidate_over_the_budget_cannot_be_picked():
+    runs = await _paused_after_evaluate(_none_viable("amz-1", "amz-2"))
+    snap = await _settle(runs, "2")  # amz-2 costs more than the 5000 ceiling
+    assert snap.next == ("choose_candidate",) and snap.values["status"] == "choice_invalid"
+
+
+async def test_replying_with_changed_requirements_re_runs_the_search():
+    runs = controller(_ScriptedThenPatch(extraction()))
+    await _start(runs)
+    candidates = [listing.candidate for listing in build_mock_amazon()._listings.values()]
+    await runs._graph.aupdate_state(CONFIG, {"evaluation": _none_viable("amz-1"), "candidates": candidates}, as_node="evaluate")
+    await _resume_quietly(runs)
+    before = (await runs.snapshot("r1")).values.get("cycles", 0)
+    snap = await _settle(runs, "raise the budget to 9000")
+    assert snap.values["status"] != "choice_invalid" and snap.values["cycles"] > before
+
+
+async def test_a_stopped_run_can_be_re_opened_by_a_message():
+    runs = controller(_ScriptedThenPatch(extraction()))
+    await _start(runs)
+    await runs._graph.aupdate_state(CONFIG, {"status": "stopped", "stop_reason": "no_progress"}, as_node="stop_report")
+    snap = await runs.snapshot("r1")
+    assert not snap.next and can_revise(snap)
+    before = snap.values.get("cycles", 0)
+    try:
+        await runs.revise("r1", "any brand is fine")
+    except Exception:
+        pass
+    after = await runs.snapshot("r1")
+    assert after.values["cycles"] > before and after.values.get("revision") == ""
+
+
+async def test_a_cancelled_or_paid_run_is_never_re_opened():
+    runs = controller(FakeProvider(extraction()))
+    await _start(runs)
+    snap = await runs.snapshot("r1")
+    for update in ({"status": "cancelled"}, {"status": "stopped", "payment_id": "p1"}):
+        await runs._graph.aupdate_state(CONFIG, update, as_node="stop_report")
+        assert not can_revise(await runs.snapshot("r1"))

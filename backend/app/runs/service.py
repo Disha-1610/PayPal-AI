@@ -30,6 +30,7 @@ from app.runs.view import (
     TERMINAL_STATUSES,
     MessageView,
     RunView,
+    can_revise,
     derive_status,
     message_view,
     question_text,
@@ -267,12 +268,14 @@ class RunService:
         if existing is not None:
             return message_view(existing)  # a retry: already accepted
         snapshot = await self._runs.snapshot(run_id)
-        if not QUESTION_NODES & set(snapshot.next) or run_id in self._resuming:
+        answering = bool(QUESTION_NODES & set(snapshot.next))
+        if run_id in self._resuming or not (answering or can_revise(snapshot)):
             raise NotAwaiting("the run is not waiting for an answer")
         row = RunMessage(run_id=run_id, id=message_id, role="user", text=text, client_id=client_id)
         async with session_scope(self._factory) as session:
             session.add(row)
-        self._resume_in_background(run_id, text, undo_message=message_id)
+        # A stopped run has nothing to resume: the message re-opens it with the changed requirements.
+        self._resume_in_background(run_id, text, undo_message=message_id, revise=not answering)
         return message_view(row)
 
     async def payer_return(self, user_id: str, run_id: str) -> bool:
@@ -362,15 +365,17 @@ class RunService:
             if record is not None:
                 record.status = status
 
-    def _resume_in_background(self, run_id: str, value: object, *, undo_message: str | None = None) -> None:
+    def _resume_in_background(
+        self, run_id: str, value: object, *, undo_message: str | None = None, revise: bool = False
+    ) -> None:
         self._resuming.add(run_id)
-        task = asyncio.create_task(self._resume(run_id, value, undo_message), name=f"resume-{run_id}")
+        task = asyncio.create_task(self._resume(run_id, value, undo_message, revise), name=f"resume-{run_id}")
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
-    async def _resume(self, run_id: str, value: object, undo_message: str | None) -> None:
+    async def _resume(self, run_id: str, value: object, undo_message: str | None, revise: bool) -> None:
         try:
-            await self._runs.resume(run_id, value)
+            await (self._runs.revise(run_id, str(value)) if revise else self._runs.resume(run_id, value))
         except Exception:
             logger.exception("run failed to resume", extra={"run_id": run_id})
             if undo_message is not None:  # the checkpoint is unchanged, so the user can send the answer again

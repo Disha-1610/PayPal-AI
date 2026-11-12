@@ -87,8 +87,8 @@ def test_pending_approval_exposes_exact_terms_only_while_awaiting_approval():
 def test_candidates_hidden_until_evaluated_then_ranked_with_code_built_reasons():
     assert run_view(RECORD, snap({"candidates": [GOOD, BAD]})).candidates is None
     views = run_view(RECORD, snap({"candidates": [BAD, GOOD], "evaluation": REPORT})).candidates
-    assert [(v.id, v.verdict, v.score) for v in views] == [("sku-1", "viable", 87.3), ("sku-2", "rejected", 0.0)]
-    assert views[0].delivery_by == "2026-11-15" and views[1].rejection_reason == "brand must be Acme"
+    assert [(v.id, v.verdict, v.score) for v in views] == [("sku-1", "viable", 87.3), ("sku-2", "warning", 0.0)]
+    assert views[0].delivery_by == "2026-11-15" and views[1].warning_reason == "brand must be Acme"
 
 
 def test_payment_shows_the_approval_link_only_while_unauthorized():

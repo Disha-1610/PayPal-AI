@@ -112,6 +112,13 @@ class RunController:
         await graph.aupdate_state(self._config(run_id), {"incoming_offer": offer}, as_node="negotiation_intake")
         return await self._invoke(graph, None, self._config(run_id))
 
+    async def revise(self, run_id: str, text: str) -> TaskState:
+        """Re-open a stopped run with the user's changed requirements: it re-enters at ``revise_intake``, applies the change
+        and searches again. The caller checks the run may be re-opened (``runs.view.can_revise``)."""
+        graph = await self._graph_of(run_id)
+        await graph.aupdate_state(self._config(run_id), {"revision": text, "status": "revising"}, as_node="revise_intake")
+        return await self._invoke(graph, None, self._config(run_id))
+
     async def cancel(self, run_id: str) -> TaskState:
         """End a paused run at the user's request: the graph finishes through ``stop_report`` with status ``cancelled``
         and any pending approval is withdrawn, so nothing can still be approved or resumed. Funds are released by the

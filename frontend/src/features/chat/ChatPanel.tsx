@@ -1,11 +1,10 @@
 "use client";
 
 import { Card, CardHeader } from "@/components/Card";
-import { useChat } from "@/hooks/useChat";
+import type { UseChat } from "@/hooks/useChat";
 import { ACTIVE_STATUSES, type RunStatus } from "@/features/runs/types";
 import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
-import type { ChatMessage } from "./types";
 
 const WAITING_PLACEHOLDER: Partial<Record<RunStatus, string>> = {
   running: "The agent is working…",
@@ -14,23 +13,27 @@ const WAITING_PLACEHOLDER: Partial<Record<RunStatus, string>> = {
 };
 
 interface ChatPanelProps {
-  runId: string;
   status: RunStatus;
-  messages: readonly ChatMessage[];
+  chat: UseChat;
+  /** The run stopped before any money moved: a message changes the requirements and runs it again. */
+  canRevise?: boolean;
 }
 
-export function ChatPanel({ runId, status, messages: serverMessages }: ChatPanelProps) {
-  const { messages, send, retry } = useChat(runId, serverMessages);
-  // The agent reads replies only while it is paused on a question; at any other point the server refuses them.
+export function ChatPanel({ status, chat, canRevise = false }: ChatPanelProps) {
+  const { messages, send, retry } = chat;
+  // The agent reads replies while it is paused on a question, or when a stopped run may be re-opened with new requirements.
   const asking = status === "awaiting_input";
+  const canReply = asking || canRevise;
   const hint = asking
     ? "The agent is waiting for your answer."
-    : ACTIVE_STATUSES.includes(status)
-      ? "You can reply when the agent asks a question."
-      : "This run has ended.";
+    : canRevise
+      ? "The run stopped. Describe what to change and it will run again."
+      : ACTIVE_STATUSES.includes(status)
+        ? "You can reply when the agent asks a question."
+        : "This run has ended.";
 
   return (
-    <Card>
+    <Card id="conversation">
       <CardHeader>
         <h2 className="text-sm font-semibold text-slate-900">Conversation</h2>
         <p className="mt-0.5 text-xs text-slate-500">{hint}</p>
@@ -38,8 +41,14 @@ export function ChatPanel({ runId, status, messages: serverMessages }: ChatPanel
       <MessageList messages={messages} onRetry={retry} />
       <Composer
         onSend={send}
-        disabled={!asking}
-        placeholder={asking ? "Reply to the agent…" : WAITING_PLACEHOLDER[status] ?? "This run has ended."}
+        disabled={!canReply}
+        placeholder={
+          asking
+            ? "Reply to the agent…"
+            : canRevise
+              ? "Change the requirements, e.g. raise the price ceiling…"
+              : WAITING_PLACEHOLDER[status] ?? "This run has ended."
+        }
       />
     </Card>
   );

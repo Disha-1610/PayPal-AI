@@ -9,6 +9,9 @@ executor step. Nodes never call each other. Two user interrupts bracket the mone
     coordinator -> (discovery | switch_candidate | adapt | stop_report)
     select -> guard_execute -> recheck -> (request_approval | evaluate | adapt) -> await_approval
     await_approval -> decline_candidate -> choose_candidate -> guard_execute   (the user declined the product)
+    evaluate -> choose_candidate     (nothing meets every requirement: candidates carry warnings; the user picks one
+                                      anyway, or replies with changed requirements -> discovery)
+    revise_intake -> revise -> (discovery | ask_user | stop_report)   (a message re-opens a stopped run)
     await_approval -> guard_pay -> place_order -> await_payer -> settle -> (end | discovery | await_payer)
 
 Every Guard failure, an exhausted Coordinator/Adapt, a rejected approval and the global limits (``GraphLimits``:
@@ -36,7 +39,7 @@ from app.db.session import session_scope
 from app.domains.base import DomainPlugin
 from app.llm.gateway import LLMGatewayError
 from app.llm.providers import LLMProvider
-from app.orchestrator.agents.adapt.node import adapt_node, ask_user_node
+from app.orchestrator.agents.adapt.node import adapt_node, ask_user_node, resolve_decision
 from app.orchestrator.agents.coordinator.agent import CoordinatorResult, coordinate
 from app.orchestrator.agents.discovery.agent import (
     discovery_adapt_node,
@@ -94,7 +97,7 @@ from app.orchestrator.router.limits import GraphLimits, LimitRoute, route_limits
 from app.orchestrator.router.payment import PaymentRoute, route_payment_error
 from app.payments.provider import ProviderError
 from app.payments.service import PaymentPermit, PaymentServiceError
-from app.schemas.adapt import RecoveryStep
+from app.schemas.adapt import AdaptProgress, RecoveryStep, UserDecision, UserDecisionKind
 from app.schemas.approval_terms import ApprovalTerms
 from app.schemas.authorization import Action, PendingApproval
 from app.schemas.candidate import Candidate
@@ -276,6 +279,8 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
         route = route_evaluation(state["evaluation"], audit=scope(state))
         if route is EvaluatorRoute.EXECUTE and state["evaluation"].needs_choice:
             return "choose_candidate"  # near-tie: the user picks, the code never breaks the tie silently
+        if route is EvaluatorRoute.COORDINATOR and choosable_ids(state):
+            return "choose_candidate"  # none fully viable: show the warnings; the user picks one or changes the requirements
         return {EvaluatorRoute.EXECUTE: "select", EvaluatorRoute.SEARCH: "discovery_start", EvaluatorRoute.COORDINATOR: "coordinator"}[route]
 
     async def coordinator(state: TaskState) -> dict[str, object]:
@@ -300,26 +305,74 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
         ranked = state["evaluation"].ranked
         return {"selected_candidate_id": ranked[0].candidate_id, "status": "selected"}
 
-    def choose_candidate(state: TaskState) -> dict[str, object]:
-        """Pause for the user's pick (a near tie, or after they declined a product). Nothing above ``interrupt`` has side effects."""
-        declined = set(state.get("declined_candidate_ids", []))
-        ranked = [r.candidate_id for r in state["evaluation"].ranked if r.candidate_id not in declined][:_MAX_CHOICES]
-        titles = {c.candidate_id: c.title for c in state.get("candidates", [])}
-        lines = [f"{i}. {titles.get(cid, cid)[:80]}" for i, cid in enumerate(ranked, start=1)]
-        if declined:
-            intro = "Okay, I won't buy that one. Reply with the number of the product you want instead:"
-        elif state["evaluation"].margin is not None and state["evaluation"].margin < _NEAR_TIE:
-            intro = "These options are nearly tied. Reply with the number of the one you want:"
+    async def apply_revision(state: TaskState, text: str) -> dict[str, object] | None:
+        """The user's free-text change to the requirements as a state update; None when it could not be applied."""
+        try:
+            update = await resolve_decision(
+                UserDecision(kind=UserDecisionKind.REPLY, text=text), state, plugin=d.plugin, provider=light, audit=scope(state)
+            )
+        except (LLMGatewayError, IntentError) as exc:
+            scope(state).emit(Phase.ADAPT, "USER_REPLY_UNUSABLE", node="revise", decision="reask", reason=str(exc))
+            return None
+        return {**update, "adapt": AdaptProgress()}  # a changed request starts the recovery ladder over
+
+    async def choose_candidate(state: TaskState) -> dict[str, object]:
+        """Pause for the user: pick a product (a near tie, a declined product, or candidates that carry warnings) or reply
+        with changed requirements, which re-runs the search. Nothing above ``interrupt`` has side effects."""
+        options = choosable_ids(state)[:_MAX_CHOICES]
+        report = state["evaluation"]
+        viable = {r.candidate_id for r in report.ranked}
+        warnings = {r.candidate_id: r.reason for r in report.rejected}
+        by_id = {c.candidate_id: c for c in state.get("candidates", [])}
+        auth = state["authorization"]
+
+        def over_budget(cid: str) -> bool:
+            c = by_id[cid]
+            return c.total_cost is not None and (c.currency or auth.currency) == auth.currency and c.total_cost > auth.max_spend
+
+        lines = []
+        for i, cid in enumerate(options, start=1):
+            notes = [] if cid in viable else [f"warning: {warnings.get(cid, 'does not fully meet the requirements')}"]
+            if over_budget(cid):
+                notes.append("over your budget")
+            lines.append(f"{i}. {by_id[cid].title[:80]}" + (f" ({'; '.join(notes)})" if notes else ""))
+        change = "or describe what to change (for example a higher price ceiling) and I will search again"
+        if state.get("declined_candidate_ids"):
+            intro = f"Okay, I won't buy that one. Reply with the number of the product you want instead, {change}:"
+        elif not viable:
+            intro = f"No product meets all of your requirements. Reply with a number to continue with one anyway, {change}:"
+        elif report.margin is not None and report.margin < _NEAR_TIE:
+            intro = f"These options are nearly tied. Reply with the number of the one you want, {change}:"
         else:
-            intro = "None of these is a clear match (some details are missing). Reply with the number of the one you want:"
-        raw = interrupt({"type": "candidate_choice", "options": ranked, "message": intro + "\n" + "\n".join(lines)})
-        picked = _pick_candidate(raw, ranked, titles)
-        if picked is None:
+            intro = f"None of these is a clear match (some details are missing). Reply with the number of the one you want, {change}:"
+        raw = interrupt({"type": "candidate_choice", "options": options, "message": intro + "\n" + "\n".join(lines)})
+        picked = _pick_candidate(raw, options, {cid: c.title for cid, c in by_id.items()})
+        if picked is not None:
+            if over_budget(picked):  # the spending ceiling is a hard authorization: raising it means changing the request
+                return {"status": "choice_invalid", "errors": ["that product is over your budget"]}
+            return {"selected_candidate_id": picked, "status": "selected"}
+        text = (str(raw.get("text", "")) if isinstance(raw, dict) else str(raw)).strip()
+        revised = await apply_revision(state, text) if text else None
+        if revised is None:
             return {"status": "choice_invalid", "errors": ["the reply did not name one of the offered options"]}
-        return {"selected_candidate_id": picked, "status": "selected"}
+        return revised
 
     def after_choose(state: TaskState) -> str:
-        return "guard_execute" if state.get("status") == "selected" else "choose_candidate"
+        status = state.get("status")
+        if status == "selected":
+            return "guard_execute"
+        return "choose_candidate" if status == "choice_invalid" else after_ask_user(state)  # the requirements changed
+
+    async def revise(state: TaskState) -> dict[str, object]:
+        """A stopped run re-opened by a message: apply the requested change, then search again."""
+        revised = await apply_revision(state, state.get("revision", ""))
+        if revised is None:
+            return {"revision": "", "status": "failed", "errors": ["could not apply the requested change to the requirements"]}
+        return {**revised, "revision": ""}
+
+    def revise_intake(state: TaskState) -> dict[str, object]:
+        """Entry for ``RunController.revise``: the message is already in state, nothing runs before it."""
+        return {"status": "revising"}
 
     def switch_candidate(state: TaskState) -> dict[str, object]:
         ids = [r.candidate_id for r in state["evaluation"].ranked]
@@ -360,7 +413,7 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
     def decline_candidate(state: TaskState) -> dict[str, object]:
         """The user declined the product: remember it and let them pick another from the evaluated list."""
         declined = [*state.get("declined_candidate_ids", []), state["selected_candidate_id"]]
-        remaining = [r for r in state["evaluation"].ranked if r.candidate_id not in declined]
+        remaining = choosable_ids({**state, "declined_candidate_ids": declined})
         if not remaining:
             return {"declined_candidate_ids": declined, "status": "failed", "errors": ["no other product is left to choose from"]}
         return {"declined_candidate_ids": declined, "status": "choosing"}
@@ -543,7 +596,7 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
         "discovery_finish": discovery_finish, "evaluate": evaluate, "coordinator": coordinator, "select": select, "choose_candidate": choose_candidate,
         "switch_candidate": switch_candidate, "decline_candidate": decline_candidate, "recheck": recheck, "request_approval": request_approval,
         "await_approval": await_approval_node, "place_order": place_order, "await_payer": await_payer, "settle": settle,
-        "monitor_intake": monitor_intake, "guard_negotiate": guard_negotiate, "negotiate": negotiate,
+        "monitor_intake": monitor_intake, "revise": revise, "revise_intake": revise_intake, "guard_negotiate": guard_negotiate, "negotiate": negotiate,
         "send_counter": send_counter, "await_counterparty": await_counterparty, "negotiation_intake": negotiation_intake,
         "guard_evaluate": guard_evaluate, "guard_execute": guard_execute, "guard_pay": guard_pay, "stop_report": stop_report,
         "propose_plan": propose_plan, "guard_plan": guard_pay, "milestone_create": milestone_create,
@@ -562,7 +615,11 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
     graph.add_edge("discovery_finish", "guard_evaluate")
     graph.add_conditional_edges("guard_evaluate", guarded("evaluate"), ["evaluate", "stop_report"])
     graph.add_conditional_edges("evaluate", after_evaluate, ["select", "choose_candidate", "discovery_start", "coordinator"])
-    graph.add_conditional_edges("choose_candidate", after_choose, ["guard_execute", "choose_candidate"])
+    graph.add_conditional_edges(
+        "choose_candidate", after_choose, ["guard_execute", "choose_candidate", "discovery_start", "ask_user", "stop_report"]
+    )
+    graph.add_edge("revise_intake", "revise")
+    graph.add_conditional_edges("revise", after_ask_user, ["discovery_start", "ask_user", "stop_report"])
     graph.add_conditional_edges("coordinator", after_coordinator, ["switch_candidate", "adapt", "stop_report"])
     graph.add_edge("select", "guard_execute")
     graph.add_conditional_edges("switch_candidate", after_switch, ["guard_execute", "stop_report"])
@@ -594,6 +651,18 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
     graph.add_conditional_edges("await_counterparty", after_counterparty, ["guard_negotiate", "stop_report"])
     graph.add_edge("negotiation_intake", "guard_negotiate")
     return graph.compile(checkpointer=checkpointer)
+
+
+def choosable_ids(state: TaskState) -> list[str]:
+    """Candidates the user may pick, best first: the viable ones, then those carrying warnings (a warning never blocks the
+    choice; the spending ceiling is still enforced). Declined products and ids outside the pool are left out."""
+    report = state.get("evaluation")
+    if report is None:
+        return []
+    declined = set(state.get("declined_candidate_ids", []))
+    pool = {c.candidate_id for c in state.get("candidates", [])}
+    ids = [*(r.candidate_id for r in report.ranked), *(r.candidate_id for r in report.rejected)]
+    return [cid for cid in dict.fromkeys(ids) if cid in pool and cid not in declined]
 
 
 def _pick_candidate(raw: object, ranked: list[str], titles: dict[str, str] | None = None) -> str | None:

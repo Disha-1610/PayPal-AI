@@ -2,7 +2,7 @@
 
 This is the boundary where internal state is shaped for the browser. Only typed, trusted fields are copied:
 ids, numbers, enums, dates, and the few display strings that are already length-bounded (candidate title, seller
-id). Rejection reasons come from code, never from connector text; reviews and listing descriptions never pass here.
+id). Warning reasons come from code, never from connector text; reviews and listing descriptions never pass here.
 """
 
 from collections.abc import Sequence
@@ -65,8 +65,8 @@ class CandidateView(BaseModel):
     in_stock: bool
     product_url: str | None = None
     score: float
-    verdict: Literal["viable", "rejected"]
-    rejection_reason: str | None = None
+    verdict: Literal["viable", "warning"]  # a warning still lets the user choose the candidate
+    warning_reason: str | None = None
 
 
 class MilestoneView(BaseModel):
@@ -117,6 +117,7 @@ class RunView(BaseModel):
     promised_by: datetime | None = None  # the delivery date the user set / approved
     milestones: list[MilestoneView] | None = None  # contractor runs: the plan, with each milestone's progress
     expected_by: datetime | None = None  # the counterparty's latest revised date, when it slipped
+    can_revise: bool = False  # the run ended without committing money: a message can change the requirements and re-run it
 
 
 class RunPageView(BaseModel):
@@ -137,6 +138,15 @@ def derive_status(snapshot: RunSnapshot) -> RunStatus:
         if node in _PAUSED_AT:
             return _PAUSED_AT[node]  # type: ignore[return-value]
     return client_status(snapshot.values.get("status", ""))
+
+
+def can_revise(snapshot: RunSnapshot) -> bool:
+    """A run that stopped or failed before any approval or payment may be re-run with changed requirements.
+    A run the user cancelled stays cancelled, and one that touched money is never re-opened from here."""
+    state = snapshot.values
+    if snapshot.next or state.get("status") not in {"stopped", "failed"}:
+        return False
+    return not state.get("approvals") and not state.get("payment_id")
 
 
 def question_text(snapshot: RunSnapshot) -> str | None:
@@ -179,8 +189,8 @@ def candidate_views(candidates: Sequence[Candidate], report: EvaluationReport | 
                 id=c.candidate_id, title=c.title, seller=c.source, price_usd=float(c.total_cost or 0), rating=c.rating or 0.0,
                 review_count=c.review_count or 0, delivery_by=_day(c.available_by), in_stock=bool(c.attributes.get("in_stock", True)),
                 product_url=c.product_url,
-                score=round(scores.get(c.candidate_id, 0.0), 1), verdict="viable" if viable else "rejected",
-                rejection_reason=None if viable else reasons.get(c.candidate_id, "not viable"),
+                score=round(scores.get(c.candidate_id, 0.0), 1), verdict="viable" if viable else "warning",
+                warning_reason=None if viable else reasons.get(c.candidate_id, "does not fully meet the requirements"),
             )
         )
     return sorted(views, key=lambda v: (v.verdict != "viable", -v.score))
@@ -278,5 +288,5 @@ def run_view(
         candidates=candidate_views(state.get("candidates", []), state.get("evaluation")),
         payment=payment_view(payment, state.get("approval_url")) if payment else None,
         stop_reason=state.get("stop_reason") if status in {"stopped", "failed"} else None,
-        steps=plan_steps(state, status), milestones=milestone_views(milestones, state.get("milestone_plan")), **base,
+        can_revise=can_revise(snapshot), steps=plan_steps(state, status), milestones=milestone_views(milestones, state.get("milestone_plan")), **base,
     )

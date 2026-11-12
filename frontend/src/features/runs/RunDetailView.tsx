@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Card, CardBody, CardHeader } from "@/components/Card";
 import { ChatPanel } from "@/features/chat/ChatPanel";
 import { ConnectionBadge } from "@/components/ConnectionBadge";
+import { useChat } from "@/hooks/useChat";
 import { useRunState } from "@/hooks/useRunState";
 import { ApprovalCard } from "@/features/approvals/ApprovalCard";
 import { CandidatesPanel } from "@/features/candidates/CandidatesPanel";
@@ -22,6 +23,15 @@ export function RunDetailView({ run: initialRun }: { run: Run }) {
     run.steps.find((s) => s.status === "running")?.id ?? run.steps[0]?.id ?? null,
   );
   const selected = run.steps.find((s) => s.id === selectedId) ?? null;
+  const chat = useChat(run.id, run.messages ?? []);
+  const asking = run.status === "awaiting_input";
+  const canChangeRequirements = asking || run.can_revise === true;
+
+  function focusComposer() {
+    const input = document.getElementById("chat-input");
+    document.getElementById("conversation")?.scrollIntoView({ behavior: "smooth", block: "center" });
+    input?.focus();
+  }
 
   return (
     <div className="space-y-6">
@@ -37,9 +47,15 @@ export function RunDetailView({ run: initialRun }: { run: Run }) {
         <ApprovalCard key={run.pending_approval.terms_hash} request={run.pending_approval} currency={run.currency} />
       ) : null}
       {run.milestones && run.milestones.length > 0 ? <MilestonesPanel milestones={run.milestones} /> : null}
-      <ChatPanel runId={run.id} status={run.status} messages={run.messages ?? []} />
+      <ChatPanel status={run.status} chat={chat} canRevise={run.can_revise === true} />
       {run.candidates && run.candidates.length > 0 ? (
-        <CandidatesPanel candidates={run.candidates} currency={run.currency} />
+        <CandidatesPanel
+          candidates={run.candidates}
+          currency={run.currency}
+          // The agent resolves the pick from the exact title, the same way a typed reply is read.
+          onChoose={asking ? (c) => chat.send(c.title) : undefined}
+          onChangeRequirements={canChangeRequirements ? focusComposer : undefined}
+        />
       ) : null}
       <div className="grid gap-6 lg:grid-cols-5">
         <Card className="lg:col-span-2">

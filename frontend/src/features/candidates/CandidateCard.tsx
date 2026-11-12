@@ -12,6 +12,8 @@ interface CandidateCardProps {
   /** Disables selecting further candidates once the compare limit is hit. */
   selectDisabled?: boolean;
   onToggleCompare?: (id: string) => void;
+  /** Shown while the agent waits for the user's pick; the pick is sent as a chat reply. */
+  onChoose?: (candidate: Candidate) => void;
 }
 
 export function CandidateCard({
@@ -21,8 +23,9 @@ export function CandidateCard({
   selected = false,
   selectDisabled = false,
   onToggleCompare,
+  onChoose,
 }: CandidateCardProps) {
-  const rejected = candidate.verdict === "rejected";
+  const warned = candidate.verdict === "warning";
   return (
     <Card className={cn("px-4 py-3", selected && "border-paypal-lightblue ring-1 ring-sky-200")}>
       <div className="flex items-start gap-3">
@@ -62,18 +65,27 @@ export function CandidateCard({
             aria-valuenow={candidate.score}
           >
             <div
-              className={cn("h-full rounded-full", rejected ? "bg-red-400" : candidate.score >= 70 ? "bg-emerald-500" : "bg-amber-400")}
+              className={cn("h-full rounded-full", warned ? "bg-amber-300" : candidate.score >= 70 ? "bg-emerald-500" : "bg-amber-400")}
               style={{ width: `${Math.max(0, Math.min(100, candidate.score))}%` }}
             />
           </div>
-          {rank === 1 && !rejected ? <Badge tone="success">Top pick</Badge> : null}
-          {rejected && candidate.rejection_reason ? (
-            <p className="mt-2 text-xs text-red-700">Rejected: {candidate.rejection_reason}</p>
+          {rank === 1 && !warned ? <Badge tone="success">Top pick</Badge> : null}
+          {warned && candidate.warning_reason ? (
+            <p className="mt-2 text-xs text-amber-700">Warning: {candidate.warning_reason}</p>
           ) : null}
         </div>
         <div className="flex flex-col items-end gap-2">
-          <Badge tone={rejected ? "danger" : "success"}>Score {candidate.score}</Badge>
-          {!rejected && onToggleCompare ? (
+          <Badge tone={warned ? "warning" : "success"}>{warned ? "Warning" : `Score ${candidate.score}`}</Badge>
+          {onChoose ? (
+            <button
+              type="button"
+              onClick={() => onChoose(candidate)}
+              className="rounded-md border border-paypal-lightblue px-2 py-0.5 text-xs font-medium text-paypal-lightblue hover:bg-sky-50"
+            >
+              Choose
+            </button>
+          ) : null}
+          {!warned && onToggleCompare ? (
             <label className="flex items-center gap-1.5 text-xs text-slate-600">
               <input
                 type="checkbox"

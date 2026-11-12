@@ -99,6 +99,7 @@ class TaskState(TypedDict, total=False):
     payment_id: str  # ledger payment of the order in flight (a UUID string)
     approval_url: str | None  # where the payer approves at the provider
     settle_attempt: int  # verification attempts so far
+    revision: str  # the user's requested change to the requirements, awaiting the ``revise`` node
     stop_reason: str  # why the task ended early (set by stop_report)
     milestone_plan: MilestonePlan | None  # the contractor's proposed plan; stored only once the user approves its hash
     milestone_seq: int  # the milestone in flight (1-based); 0 = the plan itself / none

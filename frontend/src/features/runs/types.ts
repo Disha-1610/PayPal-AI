@@ -72,6 +72,8 @@ export interface Run {
   promised_by?: string;
   /** ISO date the counterparty now says delivery will happen; present only after a revision. */
   expected_by?: string;
+  /** True when the run stopped before any approval or payment: a message changes the requirements and re-runs it. */
+  can_revise?: boolean;
 }
 
 export interface RunPage {

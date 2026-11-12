@@ -13,7 +13,8 @@ export interface Candidate {
   product_url?: string;
   /** Evaluator score, 0–100. */
   score: number;
-  verdict: "viable" | "rejected";
-  /** Set when `verdict` is "rejected". */
-  rejection_reason?: string;
+  /** A "warning" candidate misses or cannot confirm a requirement, but the user may still choose it. */
+  verdict: "viable" | "warning";
+  /** Set when `verdict` is "warning". */
+  warning_reason?: string;
 }

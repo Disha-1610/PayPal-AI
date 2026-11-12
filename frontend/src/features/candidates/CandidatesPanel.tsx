@@ -8,11 +8,20 @@ import { CandidateCard } from "./CandidateCard";
 import { CandidateCompare } from "./CandidateCompare";
 import type { Candidate } from "./types";
 
-export function CandidatesPanel({ candidates, currency }: { candidates: readonly Candidate[]; currency: string }) {
+interface CandidatesPanelProps {
+  candidates: readonly Candidate[];
+  currency: string;
+  /** The agent is waiting for the user's pick: every candidate, warnings included, can be chosen. */
+  onChoose?: (candidate: Candidate) => void;
+  /** The user may change the requirements (by replying, or by re-opening a stopped run). */
+  onChangeRequirements?: () => void;
+}
+
+export function CandidatesPanel({ candidates, currency, onChoose, onChangeRequirements }: CandidatesPanelProps) {
   const { selectedIds, toggle, clear, isFull } = useCandidateCompare();
 
   const viable = candidates.filter((c) => c.verdict === "viable").sort((a, b) => b.score - a.score);
-  const rejected = candidates.filter((c) => c.verdict === "rejected");
+  const warned = candidates.filter((c) => c.verdict === "warning");
   const selected = viable.filter((c) => selectedIds.includes(c.id));
 
   return (
@@ -20,7 +29,7 @@ export function CandidatesPanel({ candidates, currency }: { candidates: readonly
       <CardHeader>
         <h2 className="text-sm font-semibold text-slate-900">Candidates</h2>
         <p className="mt-0.5 text-xs text-slate-500">
-          {viable.length} viable · {rejected.length} rejected · compare up to {MAX_COMPARE}
+          {viable.length} viable · {warned.length} with warnings · compare up to {MAX_COMPARE}
         </p>
       </CardHeader>
       <CardBody className="space-y-6">
@@ -42,6 +51,7 @@ export function CandidatesPanel({ candidates, currency }: { candidates: readonly
                     selected={selectedIds.includes(c.id)}
                     selectDisabled={isFull}
                     onToggleCompare={toggle}
+                    onChoose={onChoose}
                   />
                 </li>
               ))}
@@ -63,19 +73,35 @@ export function CandidatesPanel({ candidates, currency }: { candidates: readonly
               </section>
             ) : null}
 
-            {rejected.length > 0 ? (
-              <details>
+            {warned.length > 0 ? (
+              <details open={viable.length === 0}>
                 <summary className="cursor-pointer text-sm font-medium text-slate-700">
-                  Rejected ({rejected.length})
+                  With warnings ({warned.length})
                 </summary>
+                <p className="mt-1 text-xs text-slate-500">
+                  These do not fully meet your requirements, but you can still choose one.
+                </p>
                 <ul className="mt-3 space-y-2">
-                  {rejected.map((c) => (
+                  {warned.map((c) => (
                     <li key={c.id}>
-                      <CandidateCard candidate={c} currency={currency} />
+                      <CandidateCard candidate={c} currency={currency} onChoose={onChoose} />
                     </li>
                   ))}
                 </ul>
               </details>
+            ) : null}
+
+            {onChangeRequirements ? (
+              <div className="flex items-center justify-between rounded-lg bg-slate-50 px-4 py-3 text-xs text-slate-600">
+                <span>Not what you are looking for?</span>
+                <button
+                  type="button"
+                  onClick={onChangeRequirements}
+                  className="font-medium text-paypal-lightblue hover:underline"
+                >
+                  Change requirements
+                </button>
+              </div>
             ) : null}
           </>
         )}
