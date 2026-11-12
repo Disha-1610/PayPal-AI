@@ -37,6 +37,7 @@ from pydantic import BaseModel  # noqa: E402
 
 from app.llm.providers import (  # noqa: E402
     FallbackProvider,
+    LLMError,
     LLMResponse,
     LLMTransientError,
     QuotaExhausted,
@@ -90,12 +91,21 @@ async def test_per_minute_limit_uses_the_fallback_only_for_the_retry_delay():
     assert (await llm.generate("p", _Out)).model == "gemini-model"
 
 
-async def test_other_primary_errors_are_not_masked_by_the_fallback():
+async def test_transient_primary_error_is_answered_by_the_fallback_without_a_cooldown():
+    primary, fallback = _Scripted("gemini", LLMTransientError("Gemini API error 503")), _Scripted("groq")
+    llm = FallbackProvider(primary, fallback)
+    assert (await llm.generate("p", _Out)).model == "groq-model"
+    assert llm.name == "gemini"  # the next call tries the primary again
+    assert (await llm.generate("p", _Out)).model == "gemini-model"
+    assert primary.calls == 2 and fallback.calls == 1
+
+
+async def test_permanent_primary_errors_are_not_masked_by_the_fallback():
     fallback = _Scripted("groq")
-    llm = FallbackProvider(_Scripted("gemini", LLMTransientError("Gemini API error 503")), fallback)
-    with pytest.raises(LLMTransientError):
+    llm = FallbackProvider(_Scripted("gemini", LLMError("Gemini API error 400")), fallback)
+    with pytest.raises(LLMError):
         await llm.generate("p", _Out)
-    assert fallback.calls == 0 and llm.name == "gemini"
+    assert fallback.calls == 0
 
 
 def test_daily_reset_is_the_next_midnight_pacific():

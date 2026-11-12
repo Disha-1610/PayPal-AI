@@ -199,7 +199,8 @@ class FallbackProvider:
     """Use ``primary`` until it reports its quota is used up, then ``fallback`` until that quota resets.
 
     A daily quota sends calls to the fallback until the primary's daily reset; a per-minute one only until the
-    retry delay the primary asked for. Any other primary error is raised as usual (the gateway retries it).
+    retry delay the primary asked for. Any other transient primary error (overload, 5xx, network) is answered by
+    the fallback for that call only; permanent errors (bad key, bad request) are raised as usual.
     """
 
     def __init__(
@@ -238,6 +239,11 @@ class FallbackProvider:
                         "primary": self.primary.name, "fallback": self.fallback.name, "daily": exc.daily,
                         "pause_seconds": round(pause),
                     },
+                )
+            except LLMTransientError as exc:  # overload/5xx/network: answer this call from the fallback, no cooldown
+                logger.warning(
+                    "llm_primary_transient_fallback",
+                    extra={"primary": self.primary.name, "fallback": self.fallback.name, "error": str(exc)},
                 )
         return await self.fallback.generate(prompt, output_model)
 
