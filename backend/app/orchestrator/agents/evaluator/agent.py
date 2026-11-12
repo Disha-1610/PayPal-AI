@@ -29,6 +29,7 @@ from app.orchestrator.agents.evaluation.pipeline import ensure_unique_ids
 from app.orchestrator.agents.evaluation.ranking import rank_candidates
 from app.orchestrator.agents.evaluator.llm_scoring import NO_TEXT, score_with_llm
 from app.schemas.candidate import Candidate
+from app.schemas.constraints import describe_constraint
 from app.schemas.constraints import Constraint
 from app.schemas.evaluation import (
     CredibilityAssessment,
@@ -80,10 +81,10 @@ def build_rejections(
 
     rejected: list[RejectedCandidate] = []
     for d in diagnose(candidates, constraints):
-        parts = [f"{v.constraint.field_name} must be {v.constraint.operator.value} {v.constraint.target_value}" for v in d.violations]
+        parts = [describe_constraint(v.constraint.field_name, v.constraint.operator, v.constraint.target_value) for v in d.violations]
         fields = [v.constraint.field_name for v in d.violations]
         if d.unverifiable:
-            parts.append(f"cannot verify: {', '.join(unverifiable_fields[d.candidate_id])}")
+            parts.append(f"cannot verify: {', '.join(f.replace('_', ' ') for f in unverifiable_fields[d.candidate_id])}")
             fields.extend(unverifiable_fields[d.candidate_id])
         kind = RejectionKind.FAILED if d.violations else RejectionKind.UNVERIFIABLE
         rejected.append(RejectedCandidate(candidate_id=d.candidate_id, kind=kind, fields=tuple(fields), reason="; ".join(parts)))

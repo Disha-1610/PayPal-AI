@@ -53,7 +53,7 @@ export function RunDetailView({ run: initialRun }: { run: Run }) {
           candidates={run.candidates}
           currency={run.currency}
           // The agent resolves the pick from the exact title, the same way a typed reply is read.
-          onChoose={asking ? (c) => chat.send(c.title) : undefined}
+          onChoose={canChangeRequirements ? (c) => chat.send(c.title) : undefined}
           onChangeRequirements={canChangeRequirements ? focusComposer : undefined}
         />
       ) : null}

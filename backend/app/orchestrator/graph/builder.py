@@ -99,7 +99,7 @@ from app.payments.provider import ProviderError
 from app.payments.service import PaymentPermit, PaymentServiceError
 from app.schemas.adapt import AdaptProgress, RecoveryStep, UserDecision, UserDecisionKind
 from app.schemas.approval_terms import ApprovalTerms
-from app.schemas.authorization import Action, PendingApproval
+from app.schemas.authorization import Action, PendingApproval, TaskAuthorization
 from app.schemas.candidate import Candidate
 from app.schemas.coordinator import Action as CoordinatorAction
 from app.schemas.coordinator import CoordinatorEvent, Trigger
@@ -327,8 +327,7 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
         auth = state["authorization"]
 
         def over_budget(cid: str) -> bool:
-            c = by_id[cid]
-            return c.total_cost is not None and (c.currency or auth.currency) == auth.currency and c.total_cost > auth.max_spend
+            return exceeds_budget(by_id[cid], auth)
 
         lines = []
         for i, cid in enumerate(options, start=1):
@@ -363,8 +362,20 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
             return "guard_execute"
         return "choose_candidate" if status == "choice_invalid" else after_ask_user(state)  # the requirements changed
 
+    def after_revise(state: TaskState) -> str:
+        return "guard_execute" if state.get("status") == "selected" else after_ask_user(state)
+
     async def revise(state: TaskState) -> dict[str, object]:
-        """A stopped run re-opened by a message: apply the requested change, then search again."""
+        """A stopped run re-opened by a message: either the pick of one of the listed products, or a change to the
+        requirements followed by a new search."""
+        text = state.get("revision", "").strip()
+        options = choosable_ids(state)
+        by_id = {c.candidate_id: c for c in state.get("candidates", [])}
+        picked = _pick_candidate(text, options, {cid: c.title for cid, c in by_id.items()})
+        if picked is not None:
+            if exceeds_budget(by_id[picked], state["authorization"]):
+                return {"revision": "", "status": "failed", "errors": ["that product is over your budget"]}
+            return {"revision": "", "selected_candidate_id": picked, "status": "selected"}
         revised = await apply_revision(state, state.get("revision", ""))
         if revised is None:
             return {"revision": "", "status": "failed", "errors": ["could not apply the requested change to the requirements"]}
@@ -619,7 +630,7 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
         "choose_candidate", after_choose, ["guard_execute", "choose_candidate", "discovery_start", "ask_user", "stop_report"]
     )
     graph.add_edge("revise_intake", "revise")
-    graph.add_conditional_edges("revise", after_ask_user, ["discovery_start", "ask_user", "stop_report"])
+    graph.add_conditional_edges("revise", after_revise, ["guard_execute", "discovery_start", "ask_user", "stop_report"])
     graph.add_conditional_edges("coordinator", after_coordinator, ["switch_candidate", "adapt", "stop_report"])
     graph.add_edge("select", "guard_execute")
     graph.add_conditional_edges("switch_candidate", after_switch, ["guard_execute", "stop_report"])
@@ -651,6 +662,15 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
     graph.add_conditional_edges("await_counterparty", after_counterparty, ["guard_negotiate", "stop_report"])
     graph.add_edge("negotiation_intake", "guard_negotiate")
     return graph.compile(checkpointer=checkpointer)
+
+
+def exceeds_budget(candidate: Candidate, auth: TaskAuthorization) -> bool:
+    """The candidate costs more than the authorized spending ceiling (same currency only; the Guard enforces the rest)."""
+    return (
+        candidate.total_cost is not None
+        and (candidate.currency or auth.currency) == auth.currency
+        and candidate.total_cost > auth.max_spend
+    )
 
 
 def choosable_ids(state: TaskState) -> list[str]:

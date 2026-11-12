@@ -231,8 +231,20 @@ class PayPalClient:
             # Body is not echoed: it can contain payer details. The debug id is enough to look it up.
             debug_id = response.headers.get("PayPal-Debug-Id", "")
             logger.warning("paypal refused request", extra={"status": response.status_code, "debug_id": debug_id})
-            raise ProviderError(f"PayPal {method} {path} refused with {response.status_code} (debug id {debug_id})")
+            issues = ", ".join(sorted({str(d.get("issue")) for d in _issues(response) if d.get("issue")}))
+            raise ProviderError(
+                f"PayPal {method} {path} refused with {response.status_code}" + (f" ({issues})" if issues else "") + f" (debug id {debug_id})"
+            )
         return response
+
+
+def _issues(response: httpx.Response) -> list[dict[str, Any]]:
+    """PayPal's machine-readable issue codes (e.g. CURRENCY_NOT_SUPPORTED); free text is not read."""
+    try:
+        details = response.json().get("details", [])
+    except ValueError:
+        return []
+    return [d for d in details if isinstance(d, dict)] if isinstance(details, list) else []
 
 
 def _json(response: httpx.Response) -> dict[str, Any]:

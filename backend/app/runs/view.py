@@ -146,7 +146,7 @@ def can_revise(snapshot: RunSnapshot) -> bool:
     state = snapshot.values
     if snapshot.next or state.get("status") not in {"stopped", "failed"}:
         return False
-    return not state.get("approvals") and not state.get("payment_id")
+    return not state.get("payment_id")  # an approval alone moved no money; a new pick is approved afresh
 
 
 def question_text(snapshot: RunSnapshot) -> str | None:

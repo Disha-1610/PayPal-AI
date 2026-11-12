@@ -254,3 +254,25 @@ async def test_a_cancelled_or_paid_run_is_never_re_opened():
     for update in ({"status": "cancelled"}, {"status": "stopped", "payment_id": "p1"}):
         await runs._graph.aupdate_state(CONFIG, update, as_node="stop_report")
         assert not can_revise(await runs.snapshot("r1"))
+
+
+async def test_a_stopped_run_lets_the_user_pick_a_listed_warned_product():
+    runs = controller(_ScriptedThenPatch(extraction()))
+    await _start(runs)
+    candidates = [listing.candidate for listing in build_mock_amazon()._listings.values()]
+    update = {"evaluation": _none_viable("amz-1"), "candidates": candidates, "status": "stopped"}
+    await runs._graph.aupdate_state(CONFIG, update, as_node="stop_report")
+    assert can_revise(await runs.snapshot("r1"))
+    title = next(c.title for c in candidates if c.candidate_id == "amz-1")
+    try:
+        await runs.revise("r1", title)
+    except Exception:
+        pass
+    assert (await runs.snapshot("r1")).values["selected_candidate_id"] == "amz-1"
+
+
+def test_requirements_are_described_in_plain_words():
+    from app.schemas.constraints import Operator, describe_constraint
+
+    assert describe_constraint("price_ceiling", Operator.LTE, 40000) == "price ceiling must be less than or equal to 40000"
+    assert describe_constraint("counterparty", Operator.EQ, "LabelBot") == "counterparty must be equal to LabelBot"

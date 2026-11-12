@@ -91,7 +91,7 @@ async def test_llm_cannot_resurrect_a_hard_filtered_candidate():
     report = await run([candidate("a", 100), candidate("b", 900)], [budget(500)], provider)
     assert [v.candidate_id for v in report.ranked] == ["a"]
     rejected = {r.candidate_id: r for r in report.rejected}
-    assert rejected["b"].kind is RejectionKind.FAILED and "total_cost" in rejected["b"].reason
+    assert rejected["b"].kind is RejectionKind.FAILED and "total cost" in rejected["b"].reason
     shown = provider.prompts[0].split("Candidates (JSON):")[1].split("Rules:")[0]
     assert '"b"' not in shown  # a filtered candidate is never shown to the model
 

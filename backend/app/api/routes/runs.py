@@ -31,7 +31,7 @@ class CreateRunBody(BaseModel):
 
     goal: str = Field(min_length=3, max_length=2000)
     max_spend: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
-    currency: Literal["USD", "INR"]
+    currency: Literal["USD"]  # PayPal rejects INR orders (CURRENCY_NOT_SUPPORTED), so a run in INR could never be paid
     deliver_by: datetime | None = None
     domain: Literal["shopping", "contractor", "a2a"] = "shopping"
 

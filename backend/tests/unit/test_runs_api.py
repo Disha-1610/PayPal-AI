@@ -52,7 +52,7 @@ def make_client(factory, controller=None, user="u1"):
     return client, service, controller
 
 
-BODY = {"goal": "running shoes size 9", "max_spend": 5000, "currency": "INR"}
+BODY = {"goal": "running shoes size 9", "max_spend": 5000, "currency": "USD"}
 
 
 def headers(key="key-0000001", user=None):
@@ -70,7 +70,7 @@ async def test_create_starts_the_run_in_the_background_with_a_scoped_authorizati
     (initial,) = controller.started
     assert initial["run_id"] == response.json()["run_id"]
     auth = initial["authorization"]
-    assert auth.permitted_platforms == {"channel3"} and auth.max_spend == 5000 and auth.currency == "INR"
+    assert auth.permitted_platforms == {"channel3"} and auth.max_spend == 5000 and auth.currency == "USD"
     assert Action.EXECUTE_REFUND not in auth.permitted_actions and Action.NEGOTIATE not in auth.permitted_actions
     assert "Budget: 5000" in initial["original_intent"]
     fetched = (await client.get(f"/runs/{response.json()['run_id']}", headers=headers())).json()

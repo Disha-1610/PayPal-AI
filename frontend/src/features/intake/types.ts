@@ -1,4 +1,5 @@
-export const CURRENCIES = ["USD", "INR"] as const;
+// PayPal rejects INR orders (CURRENCY_NOT_SUPPORTED), so only currencies it accepts are offered.
+export const CURRENCIES = ["USD"] as const;
 export type Currency = (typeof CURRENCIES)[number];
 
 export const DOMAINS = ["shopping", "contractor", "a2a"] as const;

@@ -27,6 +27,18 @@ class Operator(StrEnum):
     LTE = "lte"
 
 
+OPERATOR_WORDS: dict[Operator, str] = {
+    Operator.EQ: "equal to", Operator.NE: "different from", Operator.IN: "one of", Operator.NOT_IN: "none of",
+    Operator.GT: "greater than", Operator.GTE: "greater than or equal to", Operator.LT: "less than",
+    Operator.LTE: "less than or equal to",
+}
+
+
+def describe_constraint(field_name: str, operator: Operator, target: object) -> str:
+    """A requirement in plain words for the user, e.g. ``price ceiling must be less than or equal to 40000``."""
+    return f"{field_name.replace('_', ' ')} must be {OPERATOR_WORDS[operator]} {target}"
+
+
 RANGE_OPERATORS = frozenset({Operator.GT, Operator.GTE, Operator.LT, Operator.LTE})
 MEMBERSHIP_OPERATORS = frozenset({Operator.IN, Operator.NOT_IN})
 
