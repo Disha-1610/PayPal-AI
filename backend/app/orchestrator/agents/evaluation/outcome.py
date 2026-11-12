@@ -69,12 +69,14 @@ def classify_outcome(
 
     top = ranking.ranked[0]
     if top.score < policy.min_score:
-        return _retry_or_stop(
-            f"best candidate scored {top.score:.2f}, below the usable threshold {policy.min_score:.2f}",
-            filtered,
-            attempt,
-            policy,
-        )
+        reason = f"best candidate scored {top.score:.2f}, below the usable threshold {policy.min_score:.2f}"
+        if attempt >= policy.max_retries or _most_restrictive_constraint(filtered) is None:
+            # Every ranked candidate meets the hard requirements; a repeat search with nothing to relax returns the
+            # same pool. Let the user choose rather than loop until the run stops.
+            return EvaluationOutcome(
+                kind=OutcomeKind.NEEDS_USER_INPUT, reason=reason, options=tuple(r.candidate_id for r in ranking.ranked)
+            )
+        return _retry_or_stop(reason, filtered, attempt, policy)
 
     if ranking.margin is not None and ranking.margin < policy.min_margin:
         tied = tuple(r.candidate_id for r in ranking.ranked if top.score - r.score < policy.min_margin)

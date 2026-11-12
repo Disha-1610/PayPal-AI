@@ -13,4 +13,5 @@ langgraph-checkpoint-sqlite
 pytest
 pytest-asyncio
 google-genai
+tzdata  # time-zone data for zoneinfo on Windows (Gemini quota resets at midnight Pacific)
 pyjwt[crypto]

@@ -45,6 +45,7 @@ from app.orchestrator.agents.discovery.agent import (
     discovery_search_node,
     discovery_start_node,
 )
+from app.orchestrator.agents.evaluation.outcome import OutcomePolicy
 from app.orchestrator.agents.evaluator.agent import evaluator_node
 from app.orchestrator.agents.coordinator.plan import build_plan
 from app.orchestrator.agents.intent.agent import IntentError, extract_intent, to_state_update
@@ -108,6 +109,7 @@ from app.schemas.state import TaskState
 
 
 _MAX_CHOICES = 10  # options listed when the user must pick a product
+_NEAR_TIE = OutcomePolicy().min_margin  # below it the top options are effectively tied
 
 
 @dataclass(frozen=True)
@@ -124,6 +126,8 @@ class GraphDeps:
     terms_for: Callable[[Candidate, TaskState], ApprovalTerms]
     approval_keys: dict[str, bytes]
     provider: LLMProvider | None = None
+    # Short, high-volume agents (ask-user, discovery query rewrite, coordinator); None: they use ``provider``.
+    light_provider: LLMProvider | None = None
     discovery_policy: DiscoveryPolicy = field(default_factory=DiscoveryPolicy)
     now: Callable[[], datetime] = utcnow
     limits: GraphLimits = field(default_factory=GraphLimits)
@@ -141,6 +145,8 @@ class GraphDeps:
 def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None) -> Any:
     """Compile the graph. ``checkpointer`` makes it resumable across worker restarts."""
     d = deps
+
+    light = d.light_provider or d.provider
 
     def scope(state: TaskState) -> AuditScope:
         return AuditScope(d.audit_sink, state["run_id"])
@@ -181,7 +187,7 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
         return {IntentRoute.DISCOVERY: "discovery_start", IntentRoute.ASK_USER: "ask_user", IntentRoute.REPORT: "stop_report"}[route]
 
     async def ask_user(state: TaskState) -> dict[str, object]:
-        return await ask_user_node(state, plugin=d.plugin, provider=d.provider, audit=scope(state))
+        return await ask_user_node(state, plugin=d.plugin, provider=light, audit=scope(state))
 
     def after_ask_user(state: TaskState) -> str:
         status = state.get("status")
@@ -216,7 +222,7 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
 
     async def discovery_adapt(state: TaskState) -> dict[str, object]:
         return await discovery_adapt_node(
-            state, plugin=d.plugin, policy=d.discovery_policy, provider=d.provider, audit=scope(state)
+            state, plugin=d.plugin, policy=d.discovery_policy, provider=light, audit=scope(state)
         )
 
     def discovery_advance(state: TaskState) -> dict[str, object]:
@@ -275,7 +281,7 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
     async def coordinator(state: TaskState) -> dict[str, object]:
         ranked = [r.candidate_id for r in state["evaluation"].ranked] if state.get("evaluation") else []
         event = CoordinatorEvent(trigger=Trigger.NONE_VIABLE, alternatives=tuple(ranked), can_widen_search=True)
-        result, update = await coordinate(state, event, audit=scope(state), provider=d.provider)
+        result, update = await coordinate(state, event, audit=scope(state), provider=light)
         return {**update, "status": f"coordinator_{result.action.value}"}
 
     def after_coordinator(state: TaskState) -> str:
@@ -300,10 +306,12 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
         ranked = [r.candidate_id for r in state["evaluation"].ranked if r.candidate_id not in declined][:_MAX_CHOICES]
         titles = {c.candidate_id: c.title for c in state.get("candidates", [])}
         lines = [f"{i}. {titles.get(cid, cid)[:80]}" for i, cid in enumerate(ranked, start=1)]
-        intro = (
-            "Okay, I won't buy that one. Reply with the number of the product you want instead:"
-            if declined else "These options are nearly tied. Reply with the number of the one you want:"
-        )
+        if declined:
+            intro = "Okay, I won't buy that one. Reply with the number of the product you want instead:"
+        elif state["evaluation"].margin is not None and state["evaluation"].margin < _NEAR_TIE:
+            intro = "These options are nearly tied. Reply with the number of the one you want:"
+        else:
+            intro = "None of these is a clear match (some details are missing). Reply with the number of the one you want:"
         raw = interrupt({"type": "candidate_choice", "options": ranked, "message": intro + "\n" + "\n".join(lines)})
         picked = _pick_candidate(raw, ranked, titles)
         if picked is None:

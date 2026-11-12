@@ -22,6 +22,19 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 12.0  # per attempt; structured extraction/scoring answers are short
     llm_thinking_budget: int = 0  # Gemini 2.5 thinking tokens; 0 disables thinking (big latency win), -1 = model decides
     llm_temperature: float = 0.0
+    # Optional second provider for the short, high-volume agents (ask-user, discovery query rewrite, coordinator),
+    # so the primary model's rate limit is spent on intent extraction and evaluator scoring. Unset: all use the primary.
+    llm_light_provider: str | None = None  # gemini | groq | cerebras | openrouter | openai_compat
+    llm_light_model: str | None = None
+    llm_light_api_key: SecretStr | None = None
+    llm_light_base_url: str | None = None  # openai_compat only
+    # Optional stand-in for the primary provider while its quota is used up (daily: until it resets; per-minute: for
+    # the retry delay). Unset: quota errors fail the call as before. The key defaults to LLM_LIGHT_API_KEY when the
+    # light provider is the same service.
+    llm_fallback_provider: str | None = None
+    llm_fallback_model: str | None = None
+    llm_fallback_api_key: SecretStr | None = None
+    llm_fallback_base_url: str | None = None  # openai_compat only
     run_llm_budget_seconds: float = 90.0  # LLM time per graph invocation; once spent, agents use their code-only path (0 = unlimited)
 
     approval_signing_key: SecretStr | None = None  # HMAC key for user approvals; required to issue/verify

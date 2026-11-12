@@ -32,7 +32,7 @@ from app.domains.shopping_execution import (
     MonitorEventEvidence,
     ShoppingTerms,
 )
-from app.llm.providers import LLMError, build_provider
+from app.llm.providers import LLMError, build_light_provider, build_provider
 from app.monitor.events.processor import EventProcessor
 from app.orchestrator.executor.executor import Executor
 from app.orchestrator.graph.builder import GraphDeps, build_graph
@@ -138,6 +138,7 @@ async def open_runtime(
     try:
         keys = approval_keys(settings)
         provider = build_provider(settings)
+        light_provider = build_light_provider(settings)
         paypal = PayPalClient(settings)
     except (ApprovalError, LLMError, ProviderError) as exc:
         raise RuntimeConfigError(str(exc)) from exc
@@ -155,6 +156,7 @@ async def open_runtime(
     deps = GraphDeps(
         plugin=SHOPPING, registry=registry, text_source=SqlTextSource(factory), executor=executor, session_factory=factory,
         audit_sink=writer, terms_for=ShoppingTerms(settings.paypal_payee_merchant_id), approval_keys=keys, provider=provider,
+        light_provider=light_provider,
     )
     counterparty: SandboxCounterparty | None = None
     engagement_deps: dict[str, GraphDeps] = {}
@@ -231,6 +233,7 @@ async def open_runtime(
             await counterparty.aclose()
         await paypal.aclose()
         await channel3.aclose()
-        close_provider = getattr(provider, "aclose", None)  # OpenAI-compatible providers own an HTTP pool
-        if close_provider is not None:
-            await close_provider()
+        for llm in (provider, light_provider):  # OpenAI-compatible providers own an HTTP pool
+            close_llm = getattr(llm, "aclose", None)
+            if close_llm is not None:
+                await close_llm()

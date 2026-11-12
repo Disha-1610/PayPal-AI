@@ -95,8 +95,18 @@ def test_all_candidates_failing_credibility_retries():
 
 def test_weak_best_score_is_not_recommended():
     weak = _cand("A", review_count=0, rating=None, quality={"rating": DataQuality.UNRELIABLE})
-    out = _run([weak], [], policy=OutcomePolicy(min_score=0.9))
+    pricey = _cand("B", total_cost=Decimal("9000"))  # eliminated by the budget: a re-search can relax it
+    out = _run([weak, pricey], [BUDGET], policy=OutcomePolicy(min_score=0.9))
     assert out.kind is OutcomeKind.RETRY_SEARCH and "below the usable threshold" in out.reason
+
+
+def test_weak_but_valid_candidates_go_to_the_user_when_a_new_search_cannot_help():
+    weak = _cand("A", review_count=0, rating=None, quality={"rating": DataQuality.UNRELIABLE})
+    nothing_to_relax = _run([weak], [], policy=OutcomePolicy(min_score=0.9))
+    assert nothing_to_relax.kind is OutcomeKind.NEEDS_USER_INPUT and nothing_to_relax.options == ("A",)
+    pricey = _cand("B", total_cost=Decimal("9000"))
+    exhausted = _run([weak, pricey], [BUDGET], attempt=2, policy=OutcomePolicy(min_score=0.9))
+    assert exhausted.kind is OutcomeKind.NEEDS_USER_INPUT and exhausted.options == ("A",)
 
 
 def test_outcome_model_enforces_selection_invariant():
