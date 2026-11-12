@@ -33,6 +33,19 @@ export const DOMAIN_COPY: Record<
   },
 };
 
+/**
+ * Who a contractor / agent-to-agent run deals with: the server's built-in sandbox businesses (no outreach setup
+ * needed; the request carries no counterparty) or a real counterparty the user names.
+ */
+export const COUNTERPARTY_MODES = ["sandbox", "named"] as const;
+export type CounterpartyMode = (typeof COUNTERPARTY_MODES)[number];
+
+/** Built-in sandbox businesses per task type (backend `app/sandbox/catalog.py`), named in the goal to pick one. */
+export const SANDBOX_COUNTERPARTIES: Record<Exclude<Domain, "shopping">, readonly string[]> = {
+  contractor: ["Acme Studio", "Pixel Forge", "DataWorks", "AppCraft", "WordSmith"],
+  a2a: ["LabelBot", "LinguaAgent", "ScoutAI", "GPUBroker"],
+};
+
 /** Raw form state; numbers stay strings until validated. */
 export interface IntakeValues {
   domain: Domain;
@@ -41,7 +54,9 @@ export interface IntakeValues {
   currency: Currency;
   /** yyyy-mm-dd or "" when no deadline. */
   deliver_by: string;
-  /** Contractor / agent-to-agent: who the agent negotiates with. Ignored for shopping. */
+  /** Contractor / agent-to-agent: built-in sandbox businesses or a named counterparty. Ignored for shopping. */
+  cp_mode: CounterpartyMode;
+  /** Contractor / agent-to-agent with `cp_mode` "named": who the agent negotiates with. */
   cp_name: string;
   cp_email: string;
   /** International format, e.g. +14155550123. */

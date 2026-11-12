@@ -10,7 +10,9 @@ import {
   CURRENCIES,
   DOMAIN_COPY,
   DOMAINS,
+  SANDBOX_COUNTERPARTIES,
   type Currency,
+  type CounterpartyMode,
   type Domain,
   type IntakeErrors,
   type IntakeValues,
@@ -23,6 +25,7 @@ const INITIAL: IntakeValues = {
   max_spend: "",
   currency: "USD",
   deliver_by: "",
+  cp_mode: "sandbox",
   cp_name: "",
   cp_email: "",
   cp_phone: "",
@@ -238,9 +241,79 @@ export function IntakeForm() {
 type SetField = <K extends keyof IntakeValues>(key: K, value: IntakeValues[K]) => void;
 type TextKey = "cp_name" | "cp_email" | "cp_phone" | "cp_website" | "cp_endpoint";
 
-/** Contractor / agent-to-agent: the agent negotiates only with who the user names here. */
+const MODE_COPY: Record<CounterpartyMode, string> = {
+  sandbox: "Built-in demo businesses (sandbox)",
+  named: "Someone I name",
+};
+
+/** Contractor / agent-to-agent: built-in sandbox businesses, or only the counterparty the user names here. */
 function CounterpartyFields({ values, errors, set }: { values: IntakeValues; errors: IntakeErrors; set: SetField }) {
   const agent = values.domain === "a2a";
+  const names = SANDBOX_COUNTERPARTIES[agent ? "a2a" : "contractor"];
+
+  function pickSandbox(name: string) {
+    if (values.goal.toLowerCase().includes(name.toLowerCase())) return;
+    const goal = values.goal.trim();
+    set("goal", `${goal}${goal && !/[.!?]$/.test(goal) ? "." : ""}${goal ? " " : ""}Use ${name}.`.slice(0, GOAL_MAX));
+  }
+
+  return (
+    <fieldset className="space-y-4 rounded-lg border border-slate-200 p-4">
+      <legend className="px-1 text-sm font-semibold text-slate-900">
+        {agent ? "Agent to negotiate with" : "Contractor to contact"}
+      </legend>
+      <div role="radiogroup" aria-label="Counterparty source" className="flex flex-wrap gap-4">
+        {(Object.keys(MODE_COPY) as CounterpartyMode[]).map((mode) => (
+          <label key={mode} className="flex items-center gap-2 text-sm text-slate-700">
+            <input
+              type="radio"
+              name="cp_mode"
+              value={mode}
+              checked={values.cp_mode === mode}
+              onChange={() => set("cp_mode", mode)}
+              className="h-4 w-4 border-slate-300"
+            />
+            {MODE_COPY[mode]}
+          </label>
+        ))}
+      </div>
+      {values.cp_mode === "sandbox" ? (
+        <div className="space-y-2">
+          <p className="text-xs text-slate-500">
+            I search the server&apos;s built-in demo {agent ? "agents" : "contractors"} and pay through PayPal
+            Sandbox. Pick one to add it to the description, or leave it to me to compare them.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {names.map((name) => (
+              <button
+                key={name}
+                type="button"
+                onClick={() => pickSandbox(name)}
+                className="rounded-full border border-slate-300 px-3 py-1 text-xs text-slate-700 hover:border-paypal-lightblue hover:text-paypal-blue"
+              >
+                {name}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <NamedCounterpartyFields values={values} errors={errors} set={set} agent={agent} />
+      )}
+    </fieldset>
+  );
+}
+
+function NamedCounterpartyFields({
+  values,
+  errors,
+  set,
+  agent,
+}: {
+  values: IntakeValues;
+  errors: IntakeErrors;
+  set: SetField;
+  agent: boolean;
+}) {
   const text = (key: TextKey) => ({
     id: key,
     value: values[key],
@@ -251,10 +324,7 @@ function CounterpartyFields({ values, errors, set }: { values: IntakeValues; err
   });
 
   return (
-    <fieldset className="space-y-4 rounded-lg border border-slate-200 p-4">
-      <legend className="px-1 text-sm font-semibold text-slate-900">
-        {agent ? "Agent to negotiate with" : "Contractor to contact"}
-      </legend>
+    <>
       <p className="text-xs text-slate-500">
         {agent
           ? "I send the request to this agent's endpoint and wait for its quote. Your budget is never shared."
@@ -296,6 +366,6 @@ function CounterpartyFields({ values, errors, set }: { values: IntakeValues; err
       <Field id="cp_website" label="Website or portfolio (optional)" error={errors.cp_website}>
         <input {...text("cp_website")} type="url" inputMode="url" placeholder="https://" />
       </Field>
-    </fieldset>
+    </>
   );
 }

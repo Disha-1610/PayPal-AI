@@ -88,7 +88,8 @@ export function validateIntake(
     errors.deliver_by = "Set the date the work must be completed by.";
   }
 
-  const counterparty = values.domain === "shopping" ? undefined : validateCounterparty(values, errors);
+  const counterparty =
+    values.domain === "shopping" || values.cp_mode === "sandbox" ? undefined : validateCounterparty(values, errors);
 
   if (Object.keys(errors).length > 0) return { ok: false, errors };
 
