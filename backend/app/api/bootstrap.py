@@ -8,6 +8,7 @@ import asyncio
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager, suppress
 from dataclasses import replace
+from datetime import timedelta
 
 from fastapi import FastAPI
 from sqlalchemy import select
@@ -19,6 +20,14 @@ from app.connectors.channel3.connector import Channel3Connector
 from app.connectors.registry import ConnectorRegistry
 from app.core.config import Settings
 from app.core.logging import get_logger
+from app.counterparty.desk import CounterpartyDesk
+from app.counterparty.engagement import (
+    QuoteMilestonePlanner,
+    QuoteTermsObserver,
+    RoutedCounterparty,
+)
+from app.counterparty.tokens import ReplyTokens
+from app.counterparty.transports import HttpAgentClient, SmtpEmail, TwilioText
 from app.db.models.run import RunRecord
 from app.db.repositories.connector_text import SqlTextSource, SqlTextStore
 from app.db.session import SessionFactory
@@ -31,13 +40,15 @@ from app.domains.shopping_execution import (
     ConnectorTermsObserver,
     MonitorEventEvidence,
     ShoppingTerms,
+    TermsObserver,
 )
 from app.llm.providers import LLMError, build_light_provider, build_provider
 from app.monitor.events.processor import EventProcessor
 from app.orchestrator.executor.executor import Executor
 from app.orchestrator.graph.builder import GraphDeps, build_graph
 from app.orchestrator.graph.checkpointer import open_checkpointer
-from app.orchestrator.graph.milestones import MilestoneFlow
+from app.orchestrator.graph.milestones import MilestoneFlow, MilestonePlanner
+from app.orchestrator.graph.negotiation import CounterpartyChannel
 from app.orchestrator.graph.runtime import RunController
 from app.orchestrator.guard.approval_guard import ApprovalError, approval_keys
 from app.payments.paypal.client import PayPalClient
@@ -53,6 +64,7 @@ from app.sandbox.counterparty import (
     SandboxMilestoneObserver,
     SandboxMilestonePlanner,
 )
+from app.schemas.counterparty import USER_SUPPLIED_SOURCE
 from app.schemas.monitor import MonitorResult
 from app.workers.monitor import MonitorWorker
 from app.workers.reconciler import run_reconciler
@@ -67,6 +79,35 @@ _TERMINAL_STATUSES = ("completed", "failed", "stopped", "cancelled")
 
 class RuntimeConfigError(RuntimeError):
     """Required configuration is missing or invalid."""
+
+
+def build_desk(settings: Settings, factory: async_sessionmaker[AsyncSession]) -> CounterpartyDesk | None:
+    """Outreach to counterparties the user names. Off (None) without a signing key; each channel is on only when
+    its own settings are present, so a deployment can offer just email, or just agents."""
+    if settings.counterparty_signing_key is None:
+        return None
+    try:
+        tokens = ReplyTokens(settings.counterparty_signing_key.get_secret_value())
+    except ValueError as exc:
+        raise RuntimeConfigError(str(exc)) from exc
+    email = None
+    if settings.smtp_host and settings.smtp_from:
+        email = SmtpEmail(
+            host=settings.smtp_host, port=settings.smtp_port, sender=settings.smtp_from, username=settings.smtp_username,
+            password=settings.smtp_password.get_secret_value() if settings.smtp_password else None,
+            starttls=settings.smtp_starttls,
+        )
+    text = None
+    if settings.twilio_account_sid and settings.twilio_auth_token:
+        text = TwilioText(
+            settings.twilio_account_sid, settings.twilio_auth_token.get_secret_value(),
+            sms_from=settings.twilio_sms_from, whatsapp_from=settings.twilio_whatsapp_from,
+        )
+    return CounterpartyDesk(
+        factory, tokens, public_base_url=settings.public_api_base_url, email=email, text=text,
+        agents=HttpAgentClient(timeout=settings.a2a_timeout_seconds),
+        reply_window=timedelta(hours=settings.counterparty_reply_hours), grace=timedelta(hours=settings.counterparty_grace_hours),
+    )
 
 
 def _require(settings: Settings) -> None:
@@ -159,31 +200,50 @@ async def open_runtime(
         light_provider=light_provider,
     )
     counterparty: SandboxCounterparty | None = None
+    desk = build_desk(settings, factory)
     engagement_deps: dict[str, GraphDeps] = {}
-    if settings.sandbox_counterparties_enabled:
+    platforms = set(registry.connector_ids)
+    if settings.sandbox_counterparties_enabled or desk is not None:
         payee = settings.paypal_payee_merchant_id
-        counterparty = SandboxCounterparty(factory)
-        quoted = QuotedTermsObserver(observer, counterparty)
-        registry.register(SandboxConnector(CONTRACTOR_SOURCE, CONTRACTOR.name, OFFERINGS))
-        registry.register(SandboxConnector(AGENT_SOURCE, A2A.name, OFFERINGS))
+        sandbox_planner: SandboxMilestonePlanner | None = None
+        terms_observer: TermsObserver | None = None
+        milestone_inner: SandboxMilestoneObserver | None = None
+        channel: CounterpartyChannel | None = None
+        if settings.sandbox_counterparties_enabled:
+            counterparty = SandboxCounterparty(factory)
+            terms_observer = QuotedTermsObserver(observer, counterparty)
+            registry.register(SandboxConnector(CONTRACTOR_SOURCE, CONTRACTOR.name, OFFERINGS))
+            registry.register(SandboxConnector(AGENT_SOURCE, A2A.name, OFFERINGS))
+            sandbox_planner, milestone_inner, channel = SandboxMilestonePlanner(payee), SandboxMilestoneObserver(), counterparty
+            platforms |= set(registry.connector_ids)
+        planner: MilestonePlanner | None = sandbox_planner
+        milestone_observer: TermsObserver | None = milestone_inner
+        if desk is not None:
+            terms_observer = QuoteTermsObserver(terms_observer)
+            milestone_observer = QuoteTermsObserver(milestone_inner)
+            planner = QuoteMilestonePlanner(payee, sandbox_planner)
+            channel = RoutedCounterparty(desk, counterparty)
+            platforms.add(USER_SUPPLIED_SOURCE)
+        assert terms_observer is not None and milestone_observer is not None and planner is not None
         # Contractor: a milestone plan; each milestone is approved, paid, verified and captured on its own.
-        milestone_observer = SandboxMilestoneObserver()
         milestone_evidence = MonitorEventEvidence.for_plugin(CONTRACTOR, milestone_observer, factory)
         engagement_deps[CONTRACTOR.name] = replace(
-            deps, plugin=CONTRACTOR, executor=Executor(payments, quoted, MonitorEventEvidence(quoted, factory), CONTRACTOR.verification),
+            deps, plugin=CONTRACTOR,
+            executor=Executor(payments, terms_observer, MonitorEventEvidence(terms_observer, factory), CONTRACTOR.verification),
             terms_for=PlanTerms(EngagementTerms(payee, permission="engage_contractor")),
             milestones=MilestoneFlow(
-                planner=SandboxMilestonePlanner(payee),
+                planner=planner,
                 service=MilestoneService(Executor(payments, milestone_observer, milestone_evidence, CONTRACTOR.verification), writer),
             ),
-            before_settle=counterparty.fulfilment(CONTRACTOR),
+            before_settle=counterparty.fulfilment(CONTRACTOR) if counterparty is not None else None, quotes=desk,
         )
         # A2A: one payment for the whole deal; a failed delivery is renegotiated inside the user's ceiling.
         engagement_deps[A2A.name] = replace(
-            deps, plugin=A2A, executor=Executor(payments, quoted, MonitorEventEvidence.for_plugin(A2A, quoted, factory), A2A.verification),
+            deps, plugin=A2A,
+            executor=Executor(payments, terms_observer, MonitorEventEvidence.for_plugin(A2A, terms_observer, factory), A2A.verification),
             terms_for=EngagementTerms(payee, permission="delegate_task"),
-            envelope_for=engagement_envelope("price_ceiling"), counterparty=counterparty,
-            before_settle=counterparty.fulfilment(A2A),
+            envelope_for=engagement_envelope("price_ceiling"), counterparty=channel,
+            before_settle=counterparty.fulfilment(A2A) if counterparty is not None else None, quotes=desk,
         )
     stop = asyncio.Event()
     workers: list[asyncio.Task[None]] = []
@@ -197,10 +257,21 @@ async def open_runtime(
             )
             if counterparty is not None:
                 counterparty.bind(runs)
+            if desk is not None:
+                desk.bind(runs)
+                app.state.counterparty_desk = desk
+                app.state.twilio_auth_token = (
+                    settings.twilio_auth_token.get_secret_value() if settings.twilio_auth_token else None
+                )
+                app.state.counterparty_inbound_secret = (
+                    settings.counterparty_inbound_secret.get_secret_value() if settings.counterparty_inbound_secret else None
+                )
             worker = MonitorWorker(runs, payments, factory, writer, keys, active_runs=active_run_ids(factory))
             run_service = RunService(
-                runs, factory, registry.connector_ids, release_funds=worker.release_for_cancel,
+                runs, factory, frozenset(platforms), release_funds=worker.release_for_cancel,
                 domains=frozenset({SHOPPING.name, *engagement_deps}),
+                outreach_domains=frozenset(engagement_deps) if desk is not None else frozenset(),
+                counterparty_required=frozenset() if settings.sandbox_counterparties_enabled else frozenset(engagement_deps),
             )
             app.state.paypal = paypal
             app.state.session_factory = factory
@@ -209,7 +280,9 @@ async def open_runtime(
             app.state.monitor_dispatch = background_dispatch(worker, background)
             workers.append(
                 asyncio.create_task(
-                    run_sweeper(worker, EventProcessor(runs.load_task), interval_seconds=SWEEP_INTERVAL_SECONDS, stop=stop),
+                    run_sweeper(
+                        worker, EventProcessor(runs.load_task), interval_seconds=SWEEP_INTERVAL_SECONDS, stop=stop, desk=desk
+                    ),
                     name="deadline-sweeper",
                 )
             )
@@ -231,6 +304,8 @@ async def open_runtime(
         await _drain(stop, workers, background, run_service)  # no-op when already drained; covers a failed startup
         if counterparty is not None:
             await counterparty.aclose()
+        if desk is not None:
+            await desk.aclose()
         await paypal.aclose()
         await channel3.aclose()
         for llm in (provider, light_provider):  # OpenAI-compatible providers own an HTTP pool

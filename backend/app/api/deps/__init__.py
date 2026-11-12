@@ -7,6 +7,7 @@ from fastapi import HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.audit.service import AuditWriter
+from app.counterparty.desk import CounterpartyDesk
 from app.db.session import SessionFactory
 from app.monitor.events.processor import EventProcessor
 from app.monitor.webhooks.paypal import WebhookVerifier
@@ -72,3 +73,18 @@ def get_monitor_processor(request: Request) -> EventProcessor:
 
 def get_audit_writer(request: Request) -> AuditWriter | None:
     return getattr(request.app.state, "audit_writer", None)
+
+
+def get_counterparty_desk(request: Request) -> CounterpartyDesk:
+    desk: CounterpartyDesk | None = getattr(request.app.state, "counterparty_desk", None)
+    if desk is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "counterparty outreach is not configured")
+    return desk
+
+
+def get_twilio_auth_token(request: Request) -> str | None:
+    return getattr(request.app.state, "twilio_auth_token", None)
+
+
+def get_inbound_secret(request: Request) -> str | None:
+    return getattr(request.app.state, "counterparty_inbound_secret", None)

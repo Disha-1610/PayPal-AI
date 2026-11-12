@@ -7,6 +7,7 @@ import type { Milestone } from "@/features/milestones/types";
 export type RunStatus =
   | "running"
   | "awaiting_input"
+  | "awaiting_counterparty"
   | "awaiting_approval"
   | "awaiting_payment"
   | "completed"
@@ -17,6 +18,7 @@ export type RunStatus =
 export const ACTIVE_STATUSES: readonly RunStatus[] = [
   "running",
   "awaiting_input",
+  "awaiting_counterparty",
   "awaiting_approval",
   "awaiting_payment",
 ];
@@ -72,6 +74,8 @@ export interface Run {
   promised_by?: string;
   /** ISO date the counterparty now says delivery will happen; present only after a revision. */
   expected_by?: string;
+  /** Contractor / agent-to-agent: who the agent negotiates with and how it reaches them. */
+  counterparty?: { name: string; channels: string[] };
   /** True when the run stopped before any approval or payment: a message changes the requirements and re-runs it. */
   can_revise?: boolean;
 }

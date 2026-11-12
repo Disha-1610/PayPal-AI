@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.bootstrap import RuntimeConfigError, open_runtime
-from app.api.routes import approvals, auth, runs, webhooks
+from app.api.routes import approvals, auth, counterparty, runs, webhooks
 from app.audit.service import AuditWriter
 from app.auth.authenticator import install_auth
 from app.core.config import settings
@@ -47,6 +47,7 @@ app.include_router(auth.router)
 app.include_router(runs.router)
 app.include_router(approvals.router)
 app.include_router(webhooks.router)
+app.include_router(counterparty.router)
 
 
 @app.get("/health")

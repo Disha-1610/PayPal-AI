@@ -13,6 +13,7 @@ import { OutcomeSummary } from "@/features/payment/OutcomeSummary";
 import { PaymentStatusCard } from "@/features/payment/PaymentStatusCard";
 import { PlanTimeline } from "@/features/plan/PlanTimeline";
 import { StepInspector } from "@/features/plan/StepInspector";
+import { ConfirmDeliveryCard } from "./ConfirmDeliveryCard";
 import { RunSummary } from "./RunSummary";
 import type { Run } from "./types";
 
@@ -45,6 +46,9 @@ export function RunDetailView({ run: initialRun }: { run: Run }) {
       ) : null}
       {run.status === "awaiting_approval" && run.pending_approval ? (
         <ApprovalCard key={run.pending_approval.terms_hash} request={run.pending_approval} currency={run.currency} />
+      ) : null}
+      {run.counterparty && run.payment?.status === "authorized" && run.status === "running" ? (
+        <ConfirmDeliveryCard runId={run.id} counterparty={run.counterparty.name} />
       ) : null}
       {run.milestones && run.milestones.length > 0 ? <MilestonesPanel milestones={run.milestones} /> : null}
       <ChatPanel status={run.status} chat={chat} canRevise={run.can_revise === true} />

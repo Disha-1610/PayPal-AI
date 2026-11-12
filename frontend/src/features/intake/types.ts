@@ -26,7 +26,7 @@ export const DOMAIN_COPY: Record<
   },
   a2a: {
     label: "Negotiate with another agent",
-    goalLabel: "What should I negotiate, and with which agent?",
+    goalLabel: "What should I negotiate?",
     placeholder: "Label 10k product images with LabelBot, pay at most 450",
     deadlineLabel: "Result delivered by",
     deadlineRequired: true,
@@ -41,9 +41,31 @@ export interface IntakeValues {
   currency: Currency;
   /** yyyy-mm-dd or "" when no deadline. */
   deliver_by: string;
+  /** Contractor / agent-to-agent: who the agent negotiates with. Ignored for shopping. */
+  cp_name: string;
+  cp_email: string;
+  /** International format, e.g. +14155550123. */
+  cp_phone: string;
+  /** Reach the phone by WhatsApp instead of SMS. */
+  cp_whatsapp: boolean;
+  cp_website: string;
+  /** The other agent's https endpoint (agent-to-agent only). */
+  cp_endpoint: string;
 }
 
-export type IntakeErrors = Partial<Record<keyof IntakeValues, string>>;
+export type IntakeErrors = Partial<Record<keyof IntakeValues | "cp_contact", string>>;
+
+export type CounterpartyChannel = "email" | "sms" | "whatsapp";
+
+/** Who a contractor / agent-to-agent run negotiates with. Mirrors the backend `CounterpartyContact`. */
+export interface CounterpartyInput {
+  name: string;
+  email?: string;
+  phone?: string;
+  website?: string;
+  agent_endpoint?: string;
+  channels?: CounterpartyChannel[];
+}
 
 /** Validated payload for `POST /runs`. The Intent agent extracts constraints from `goal`. */
 export interface CreateRunInput {
@@ -52,6 +74,7 @@ export interface CreateRunInput {
   max_spend: number;
   currency: Currency;
   deliver_by?: string;
+  counterparty?: CounterpartyInput;
 }
 
 export interface CreateRunResponse {

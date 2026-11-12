@@ -17,6 +17,7 @@ from app.domains.contractor.schemas import MilestonePlan
 from app.schemas.adapt import AdaptProgress, RelaxationProposal
 from app.schemas.authorization import Approval, PendingApproval, TaskAuthorization
 from app.schemas.candidate import Candidate
+from app.schemas.counterparty import CounterpartyContact
 from app.schemas.constraints import Constraint, ConstraintDiff, diff_constraints
 from app.schemas.coordinator import CoordinatorProgress
 from app.schemas.discovery import DiscoveryProgress
@@ -103,6 +104,8 @@ class TaskState(TypedDict, total=False):
     stop_reason: str  # why the task ended early (set by stop_report)
     milestone_plan: MilestonePlan | None  # the contractor's proposed plan; stored only once the user approves its hash
     milestone_seq: int  # the milestone in flight (1-based); 0 = the plan itself / none
+    counterparty: CounterpartyContact | None  # contractor / A2A: who the user named; quotes are requested from them
+    quote_round: int  # quote requests sent so far; each reply link names its round
 
 
 STATE_FIELDS = frozenset(TaskState.__annotations__)
@@ -116,6 +119,7 @@ def make_initial_state(
     constraints: list[Constraint] | None = None,
     domain: str | None = None,
     deliver_by: datetime | None = None,
+    counterparty: CounterpartyContact | None = None,
 ) -> TaskState:
     if authorization.run_id != run_id:
         raise ValueError("authorization.run_id does not match run_id")
@@ -135,6 +139,8 @@ def make_initial_state(
         state["domain"] = domain
     if deliver_by is not None:
         state["deliver_by"] = deliver_by
+    if counterparty is not None:
+        state["counterparty"] = counterparty
     return state
 
 

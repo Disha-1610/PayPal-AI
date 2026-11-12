@@ -21,15 +21,20 @@ from app.orchestrator.router.limits import GraphLimits
 from app.schemas.approval_terms import from_minor_units
 from app.schemas.authorization import PendingApproval
 from app.schemas.candidate import Candidate
+from app.schemas.counterparty import CounterpartyContact
 from app.schemas.evaluator import EvaluationReport
 from app.schemas.state import TaskState
 
 RunStatus = Literal[
-    "running", "awaiting_input", "awaiting_approval", "awaiting_payment", "completed", "failed", "stopped"
+    "running", "awaiting_input", "awaiting_counterparty", "awaiting_approval", "awaiting_payment", "completed", "failed", "stopped"
 ]
 _CLIENT_STATUSES: frozenset[str] = frozenset(RunStatus.__args__)  # type: ignore[attr-defined]
-_PAUSED_AT = {"await_approval": "awaiting_approval", "await_payer": "awaiting_payment", "ask_user": "awaiting_input", "choose_candidate": "awaiting_input"}
-QUESTION_NODES = frozenset({"ask_user", "choose_candidate"})  # paused for a free-text answer from the user
+_PAUSED_AT = {
+    "await_approval": "awaiting_approval", "await_payer": "awaiting_payment", "ask_user": "awaiting_input",
+    "choose_candidate": "awaiting_input", "counterparty_followup": "awaiting_input",
+    "await_quote": "awaiting_counterparty", "await_counterparty": "awaiting_counterparty",
+}
+QUESTION_NODES = frozenset({"ask_user", "choose_candidate", "counterparty_followup"})  # paused for a free-text answer from the user
 _GRAPH_STATUS = {
     "failed": "failed", "stopped": "stopped", "cancelled": "stopped", "settled": "completed", "completed": "completed",
     "voided": "stopped", "expired": "stopped",
@@ -97,6 +102,11 @@ class PaymentView(BaseModel):
     updated_at: datetime
 
 
+class CounterpartyView(BaseModel):
+    name: str
+    channels: list[str]  # how the agent reaches it: email | sms | whatsapp | agent
+
+
 class RunView(BaseModel):
     id: str
     goal: str
@@ -117,6 +127,7 @@ class RunView(BaseModel):
     promised_by: datetime | None = None  # the delivery date the user set / approved
     milestones: list[MilestoneView] | None = None  # contractor runs: the plan, with each milestone's progress
     expected_by: datetime | None = None  # the counterparty's latest revised date, when it slipped
+    counterparty: CounterpartyView | None = None  # contractor / A2A: who the user named
     can_revise: bool = False  # the run ended without committing money: a message can change the requirements and re-run it
 
 
@@ -288,5 +299,13 @@ def run_view(
         candidates=candidate_views(state.get("candidates", []), state.get("evaluation")),
         payment=payment_view(payment, state.get("approval_url")) if payment else None,
         stop_reason=state.get("stop_reason") if status in {"stopped", "failed"} else None,
-        can_revise=can_revise(snapshot), steps=plan_steps(state, status), milestones=milestone_views(milestones, state.get("milestone_plan")), **base,
+        can_revise=can_revise(snapshot), steps=plan_steps(state, status), milestones=milestone_views(milestones, state.get("milestone_plan")),
+        counterparty=counterparty_view(state.get("counterparty")), **base,
     )
+
+
+def counterparty_view(contact: CounterpartyContact | None) -> CounterpartyView | None:
+    if contact is None:
+        return None
+    channels = list(contact.reachable_channels) + (["agent"] if contact.agent_endpoint else [])
+    return CounterpartyView(name=contact.name, channels=channels)

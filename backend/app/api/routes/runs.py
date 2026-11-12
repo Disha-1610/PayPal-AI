@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.api.deps import Principal, get_principal, get_run_service
 from app.runs.service import (
     CannotCancel,
+    CounterpartyRequired,
     InvalidCursor,
     NewRun,
     NotAwaiting,
@@ -20,6 +21,7 @@ from app.runs.service import (
     RunService,
     UnsupportedDomain,
 )
+from app.schemas.counterparty import CounterpartyContact
 from app.runs.view import MessageView, RunPageView, RunView
 
 router = APIRouter(tags=["runs"])
@@ -34,11 +36,16 @@ class CreateRunBody(BaseModel):
     currency: Literal["USD"]  # PayPal rejects INR orders (CURRENCY_NOT_SUPPORTED), so a run in INR could never be paid
     deliver_by: datetime | None = None
     domain: Literal["shopping", "contractor", "a2a"] = "shopping"
+    counterparty: CounterpartyContact | None = None  # contractor / A2A: who to negotiate with
 
     @model_validator(mode="after")
     def _deadline_for_engagements(self) -> "CreateRunBody":
         if self.domain != "shopping" and self.deliver_by is None:
             raise ValueError("deliver_by is required for contractor and a2a runs: it is the hard completion deadline")
+        if self.domain == "shopping" and self.counterparty is not None:
+            raise ValueError("shopping runs find products themselves; counterparty applies to contractor and a2a runs")
+        if self.counterparty is not None:
+            self.counterparty.require_for(self.domain)
         return self
 
 
@@ -57,10 +64,11 @@ async def create_run(
         record = await service.create(
             principal.user_id, idempotency_key,
             NewRun(
-                goal=body.goal, max_spend=body.max_spend, currency=body.currency, deliver_by=body.deliver_by, domain=body.domain
+                goal=body.goal, max_spend=body.max_spend, currency=body.currency, deliver_by=body.deliver_by, domain=body.domain,
+                counterparty=body.counterparty,
             ),
         )
-    except UnsupportedDomain as exc:
+    except (UnsupportedDomain, CounterpartyRequired) as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     return CreateRunResponse(run_id=record.run_id)
 

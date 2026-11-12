@@ -42,6 +42,10 @@ STATUS_INVALID = "negotiation_invalid"
 STATUS_UNAVAILABLE = "negotiation_unavailable"
 
 
+class ChannelError(Exception):
+    """A counterparty channel could not deliver. The message is safe to show the user."""
+
+
 class CounterpartyChannel(Protocol):
     """Delivers a Guard-checked counter-offer to the other side. Replies come back through
     ``RunController.receive_counter_offer``; sending never decides anything."""
@@ -81,7 +85,10 @@ async def send_counter_step(
     offer = state["negotiation_result"].offer
     if channel is None or offer is None:
         return {"status": STATUS_UNAVAILABLE, "errors": ["no channel to send the counter-offer to the counterparty"]}
-    await channel.send_counter(state["run_id"], offer)
+    try:
+        await channel.send_counter(state["run_id"], offer)
+    except ChannelError as exc:
+        return {"status": STATUS_UNAVAILABLE, "errors": [f"could not send the counter-offer: {exc}"]}
     if audit:
         audit.emit(
             Phase.EXECUTION, "COUNTER_OFFER_SENT", node="negotiation", decision="sent",
@@ -93,6 +100,8 @@ async def send_counter_step(
 def counterparty_reply(raw: Any, *, audit: AuditScope | None) -> dict[str, object]:
     """The resume value of ``await_counterparty``: a counter-offer, or a decline. Anything malformed rejects the
     whole reply (it is never partially trusted)."""
+    if isinstance(raw, Mapping) and raw.get("decision") == "timeout":
+        return {"status": STATUS_DECLINED, "errors": ["the counterparty did not reply to the counter-offer"]}
     if not isinstance(raw, Mapping) or raw.get("decision") == "decline":
         return {"status": STATUS_DECLINED}
     try:

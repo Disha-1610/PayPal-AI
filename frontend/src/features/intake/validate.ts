@@ -1,7 +1,66 @@
-import { DOMAIN_COPY, type CreateRunInput, type IntakeErrors, type IntakeValues } from "./types";
+import {
+  DOMAIN_COPY,
+  type CounterpartyChannel,
+  type CounterpartyInput,
+  type CreateRunInput,
+  type IntakeErrors,
+  type IntakeValues,
+} from "./types";
 
 export const GOAL_MIN = 10;
 export const GOAL_MAX = 1000;
+
+const EMAIL = /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,24}$/;
+const PHONE = /^\+[1-9]\d{7,14}$/;
+
+/** Strip spaces, dots, dashes and brackets: "+1 (415) 555-0123" -> "+14155550123". */
+export function normalizePhone(raw: string): string {
+  return raw.replace(/[\s().-]/g, "");
+}
+
+function isHttpsUrl(raw: string): boolean {
+  try {
+    const url = new URL(raw);
+    return url.protocol === "https:" && url.hostname.includes(".") && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
+/** The counterparty for a contractor / agent-to-agent run; problems are added to `errors`. */
+function validateCounterparty(values: IntakeValues, errors: IntakeErrors): CounterpartyInput {
+  const name = values.cp_name.trim();
+  const email = values.cp_email.trim();
+  const phone = normalizePhone(values.cp_phone.trim());
+  const website = values.cp_website.trim();
+  const endpoint = values.cp_endpoint.trim();
+
+  if (!name) errors.cp_name = "Name who the agent should negotiate with.";
+  if (email && !EMAIL.test(email)) errors.cp_email = "Enter a valid email address.";
+  if (phone && !PHONE.test(phone)) errors.cp_phone = "Use international format, e.g. +14155550123.";
+  if (website && !isHttpsUrl(website)) errors.cp_website = "Use a full https:// address.";
+  if (values.domain === "a2a") {
+    if (!endpoint) errors.cp_endpoint = "The agent's https endpoint is required so I can reach it.";
+    else if (!isHttpsUrl(endpoint)) errors.cp_endpoint = "Use the agent's full https:// address.";
+  }
+  if (values.domain === "contractor" && !email && !phone) {
+    errors.cp_contact = "Give an email or a phone number so I can contact the contractor.";
+  }
+
+  const useEmail = values.domain === "contractor" && email;
+  const usePhone = values.domain === "contractor" && phone;
+  const channels: CounterpartyChannel[] = [];
+  if (useEmail) channels.push("email");
+  if (usePhone) channels.push(values.cp_whatsapp ? "whatsapp" : "sms");
+  return {
+    name,
+    ...(useEmail ? { email } : {}),
+    ...(usePhone ? { phone } : {}),
+    ...(website ? { website } : {}),
+    ...(values.domain === "a2a" && endpoint ? { agent_endpoint: endpoint } : {}),
+    ...(channels.length > 0 ? { channels } : {}),
+  };
+}
 
 export type ValidationResult =
   | { ok: true; input: CreateRunInput }
@@ -29,6 +88,8 @@ export function validateIntake(
     errors.deliver_by = "Set the date the work must be completed by.";
   }
 
+  const counterparty = values.domain === "shopping" ? undefined : validateCounterparty(values, errors);
+
   if (Object.keys(errors).length > 0) return { ok: false, errors };
 
   return {
@@ -39,6 +100,7 @@ export function validateIntake(
       max_spend: Math.round(maxSpend * 100) / 100,
       currency: values.currency,
       ...(values.deliver_by ? { deliver_by: values.deliver_by } : {}),
+      ...(counterparty ? { counterparty } : {}),
     },
   };
 }

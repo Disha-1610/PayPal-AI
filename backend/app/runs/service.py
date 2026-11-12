@@ -37,6 +37,7 @@ from app.runs.view import (
     run_view,
 )
 from app.schemas.authorization import Action, TaskAuthorization
+from app.schemas.counterparty import CounterpartyContact
 from app.schemas.monitor import Problem
 from app.schemas.state import TaskState, make_initial_state
 
@@ -85,6 +86,10 @@ class UnsupportedDomain(Exception):
     """This deployment has no runtime for the requested domain."""
 
 
+class CounterpartyRequired(Exception):
+    """The domain needs a counterparty the user names, or this deployment cannot reach the one given."""
+
+
 class NotAwaiting(Exception):
     """The run is not paused where this action applies (not asking a question / not waiting for the payer)."""
 
@@ -96,6 +101,7 @@ class NewRun:
     currency: str
     deliver_by: datetime | None = None
     domain: str = "shopping"
+    counterparty: CounterpartyContact | None = None
 
 
 @dataclass(frozen=True)
@@ -109,6 +115,8 @@ def intent_text(new: NewRun) -> str:
     parts = [new.goal.strip(), f"Budget: {new.max_spend} {new.currency}."]
     if new.deliver_by is not None:
         parts.append(f"Must be delivered by {new.deliver_by.date().isoformat()}.")
+    if new.counterparty is not None:
+        parts.append(f"Counterparty: {new.counterparty.describe()}.")
     return " ".join(parts)
 
 
@@ -135,9 +143,13 @@ class RunService:
         release_funds: Callable[[str], Awaitable[bool]] | None = None,
         *,
         domains: frozenset[str] = frozenset({"shopping"}),
+        outreach_domains: frozenset[str] = frozenset(),
+        counterparty_required: frozenset[str] = frozenset(),
     ) -> None:
         self._runs, self._factory, self._platforms = runs, session_factory, platforms
         self._domains = domains
+        self._outreach = outreach_domains  # domains whose runtime can contact a counterparty the user names
+        self._counterparty_required = counterparty_required  # domains with no catalog: a named counterparty is required
         self._release_funds = release_funds  # releases committed money before a cancel; None: nothing to release
         self._tasks: set[asyncio.Task[None]] = set()
         self._resuming: set[str] = set()  # runs with a resume in flight: a second one would re-run the paused node
@@ -146,6 +158,12 @@ class RunService:
         """Create the run and start it in the background. A repeated key returns the original run."""
         if new.domain not in self._domains:
             raise UnsupportedDomain(f"domain {new.domain!r} is not available; available: {sorted(self._domains)}")
+        if new.counterparty is not None and new.domain not in self._outreach:
+            raise CounterpartyRequired("contacting a counterparty is not configured on this server")
+        if new.counterparty is None and new.domain in self._counterparty_required:
+            raise CounterpartyRequired(
+                "name who to negotiate with: a contractor's email or phone number, or the other agent's https endpoint"
+            )
         existing = await self._by_key(user_id, idempotency_key)
         if existing is not None:
             return existing
@@ -409,7 +427,7 @@ class RunService:
         )
         initial = make_initial_state(
             run_id=run_id, original_intent=intent_text(new), authorization=authorization, domain=new.domain,
-            deliver_by=deadline_of(new.deliver_by),
+            deliver_by=deadline_of(new.deliver_by), counterparty=new.counterparty,
         )
         status = "failed"
         try:

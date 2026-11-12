@@ -26,11 +26,13 @@ export function ChatPanel({ status, chat, canRevise = false }: ChatPanelProps) {
   const canReply = asking || canRevise;
   const hint = asking
     ? "The agent is waiting for your answer."
-    : canRevise
-      ? "The run stopped. Describe what to change and it will run again."
-      : ACTIVE_STATUSES.includes(status)
-        ? "You can reply when the agent asks a question."
-        : "This run has ended.";
+    : status === "awaiting_counterparty"
+      ? "Waiting for the counterparty's reply. If they don't answer, you'll be asked what to do."
+      : canRevise
+        ? "The run stopped. Describe what to change and it will run again."
+        : ACTIVE_STATUSES.includes(status)
+          ? "You can reply when the agent asks a question."
+          : "This run has ended.";
 
   return (
     <Card id="conversation">

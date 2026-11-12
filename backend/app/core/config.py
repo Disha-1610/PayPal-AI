@@ -67,6 +67,24 @@ class Settings(BaseSettings):
     # In-app sandbox contractors and remote agents, so contractor and A2A runs have a counterparty (like PayPal sandbox).
     sandbox_counterparties_enabled: bool = True
 
+    # Real counterparties the user names (contractor: email / SMS / WhatsApp; A2A: the agent's https endpoint).
+    public_api_base_url: str = "http://localhost:8000"  # where counterparties open reply links and agents call back
+    counterparty_signing_key: SecretStr | None = None  # HMAC key for reply links (>= 32 chars); unset: outreach is off
+    counterparty_reply_hours: int = 48  # how long to wait for a reply before one reminder
+    counterparty_grace_hours: int = 24  # after the reminder, how long before the user is asked what to do
+    counterparty_inbound_secret: SecretStr | None = None  # shared secret the inbound-email provider sends
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: SecretStr | None = None
+    smtp_from: str | None = None
+    smtp_starttls: bool = True
+    twilio_account_sid: str | None = None
+    twilio_auth_token: SecretStr | None = None
+    twilio_sms_from: str | None = None  # E.164 number
+    twilio_whatsapp_from: str | None = None  # E.164 number enabled for WhatsApp
+    a2a_timeout_seconds: float = 15.0
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip().rstrip("/") for o in self.cors_origins.split(",") if o.strip()]

@@ -121,6 +121,18 @@ export async function cancelRun(runId: string, signal?: AbortSignal): Promise<vo
 }
 
 /**
+ * The user's answer for a counterparty they named: did it deliver? Accepting lets the held payment be captured;
+ * rejecting voids it. 409 when the run has no delivery waiting for confirmation.
+ */
+export async function confirmDelivery(runId: string, accepted: boolean, signal?: AbortSignal): Promise<void> {
+  await request<unknown>(`/runs/${encodeURIComponent(runId)}/confirm-delivery`, {
+    method: "POST",
+    body: { accepted },
+    signal,
+  });
+}
+
+/**
  * Webhook ingest. PayPal calls this server-to-server; exposed only for local
  * sandbox/testing tools — the browser must never hold real transmission signatures.
  */

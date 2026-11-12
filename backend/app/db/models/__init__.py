@@ -4,9 +4,10 @@ from app.db.models.milestone import Milestone
 from app.db.models.monitor import MonitorEventRecord
 from app.db.models.payment import Payment, PaymentEvent, PaymentReconciliation
 from app.db.models.run import RunRecord
+from app.db.models.run_counterparty import RunCounterparty
 from app.db.models.run_message import RunMessage
 
 __all__ = [
     "AuditLog", "ConnectorText", "Milestone", "MonitorEventRecord", "Payment", "PaymentEvent", "PaymentReconciliation",
-    "RunMessage", "RunRecord",
+    "RunCounterparty", "RunMessage", "RunRecord",
 ]

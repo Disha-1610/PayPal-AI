@@ -75,6 +75,18 @@ from app.orchestrator.graph.negotiation import (
     negotiate_step,
     send_counter_step,
 )
+from app.orchestrator.graph.quotes import (
+    STATUS_AWAITING_QUOTE,
+    STATUS_FOLLOWUP_INVALID,
+    STATUS_QUOTED,
+    STATUS_REQUOTE,
+    QuoteChannel,
+    followup_answer,
+    followup_question,
+    quote_reply,
+    request_quote_step,
+    uses_quotes,
+)
 from app.orchestrator.graph.stop import stop_report_node
 from app.orchestrator.graph.timing import timed
 from app.orchestrator.guard.approval_guard import signed_approval_verifier
@@ -143,6 +155,8 @@ class GraphDeps:
     # In-process counterparties (sandbox) report fulfilment here, before settlement opens its transaction.
     # Real counterparties report through webhooks and leave this unset.
     before_settle: Callable[[TaskState], Awaitable[None]] | None = None
+    # A counterparty the user named (contractor / A2A): quote requests go out here instead of a catalog search.
+    quotes: QuoteChannel | None = None
 
 
 def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None) -> Any:
@@ -216,7 +230,35 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
         return {**discovery_start_node(state, audit=scope(state)), "cycles": 1, "cycle_hashes": [digest]}
 
     def after_discovery_start(state: TaskState) -> str:
-        return {LimitRoute.CONTINUE: "discovery_search", LimitRoute.STOP: "stop_report"}[route_limits(state, d.limits)]
+        search = "request_quote" if uses_quotes(state, d.quotes) else "discovery_search"
+        return {LimitRoute.CONTINUE: search, LimitRoute.STOP: "stop_report"}[route_limits(state, d.limits)]
+
+    # ---- quotes from a counterparty the user named (instead of a catalog search) ----------------------
+
+    async def request_quote(state: TaskState) -> dict[str, object]:
+        assert d.quotes is not None  # routed here only when the domain has a quote channel
+        return await request_quote_step(state, channel=d.quotes, audit=scope(state))
+
+    def after_request_quote(state: TaskState) -> str:
+        return "await_quote" if state.get("status") == STATUS_AWAITING_QUOTE else "counterparty_followup"
+
+    def await_quote(state: TaskState) -> dict[str, object]:
+        raw = interrupt({"kind": "quote", "round": state.get("quote_round", 0)})
+        return quote_reply(raw, state, audit=scope(state))
+
+    def after_quote(state: TaskState) -> str:
+        return "guard_evaluate" if state.get("status") == STATUS_QUOTED else "counterparty_followup"
+
+    def counterparty_followup(state: TaskState) -> dict[str, object]:
+        """Pause for the user: the counterparty declined, did not reply, or the quote was unusable."""
+        raw = interrupt({"type": "counterparty_followup", "message": followup_question(state)})
+        return followup_answer(raw, state)
+
+    def after_followup(state: TaskState) -> str:
+        status = state.get("status")
+        if status == STATUS_REQUOTE:
+            return "discovery_start"
+        return "counterparty_followup" if status == STATUS_FOLLOWUP_INVALID else "stop_report"
 
     async def discovery_search(state: TaskState) -> dict[str, object]:
         return await discovery_search_node(
@@ -281,6 +323,8 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
             return "choose_candidate"  # near-tie: the user picks, the code never breaks the tie silently
         if route is EvaluatorRoute.COORDINATOR and choosable_ids(state):
             return "choose_candidate"  # none fully viable: show the warnings; the user picks one or changes the requirements
+        if route is not EvaluatorRoute.EXECUTE and uses_quotes(state, d.quotes):
+            return "counterparty_followup"  # one named counterparty: searching again would only re-ask it
         return {EvaluatorRoute.EXECUTE: "select", EvaluatorRoute.SEARCH: "discovery_start", EvaluatorRoute.COORDINATOR: "coordinator"}[route]
 
     async def coordinator(state: TaskState) -> dict[str, object]:
@@ -609,6 +653,7 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
         "await_approval": await_approval_node, "place_order": place_order, "await_payer": await_payer, "settle": settle,
         "monitor_intake": monitor_intake, "revise": revise, "revise_intake": revise_intake, "guard_negotiate": guard_negotiate, "negotiate": negotiate,
         "send_counter": send_counter, "await_counterparty": await_counterparty, "negotiation_intake": negotiation_intake,
+        "request_quote": request_quote, "await_quote": await_quote, "counterparty_followup": counterparty_followup,
         "guard_evaluate": guard_evaluate, "guard_execute": guard_execute, "guard_pay": guard_pay, "stop_report": stop_report,
         "propose_plan": propose_plan, "guard_plan": guard_pay, "milestone_create": milestone_create,
         "milestone_next": milestone_next, "milestone_pay": milestone_pay,
@@ -620,12 +665,17 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
     graph.add_conditional_edges("intent", after_intent, ["discovery_start", "ask_user", "stop_report"])
     graph.add_conditional_edges("adapt", after_adapt, ["ask_user", "discovery_start", "stop_report"])
     graph.add_conditional_edges("ask_user", after_ask_user, ["discovery_start", "ask_user", "stop_report"])
-    graph.add_conditional_edges("discovery_start", after_discovery_start, ["discovery_search", "stop_report"])
+    graph.add_conditional_edges("discovery_start", after_discovery_start, ["discovery_search", "request_quote", "stop_report"])
+    graph.add_conditional_edges("request_quote", after_request_quote, ["await_quote", "counterparty_followup"])
+    graph.add_conditional_edges("await_quote", after_quote, ["guard_evaluate", "counterparty_followup"])
+    graph.add_conditional_edges("counterparty_followup", after_followup, ["discovery_start", "counterparty_followup", "stop_report"])
     for name in ("discovery_search", "discovery_adapt", "discovery_advance"):
         graph.add_conditional_edges(name, after_discovery, ["discovery_search", "discovery_adapt", "discovery_advance", "discovery_finish"])
     graph.add_edge("discovery_finish", "guard_evaluate")
     graph.add_conditional_edges("guard_evaluate", guarded("evaluate"), ["evaluate", "stop_report"])
-    graph.add_conditional_edges("evaluate", after_evaluate, ["select", "choose_candidate", "discovery_start", "coordinator"])
+    graph.add_conditional_edges(
+        "evaluate", after_evaluate, ["select", "choose_candidate", "discovery_start", "coordinator", "counterparty_followup"]
+    )
     graph.add_conditional_edges(
         "choose_candidate", after_choose, ["guard_execute", "choose_candidate", "discovery_start", "ask_user", "stop_report"]
     )

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useState, type ChangeEvent, type FormEvent, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
 import { AlertTriangle, Loader2, Send } from "lucide-react";
 import { Card, CardBody, CardHeader } from "@/components/Card";
@@ -17,7 +17,19 @@ import {
 } from "./types";
 import { GOAL_MAX, validateIntake } from "./validate";
 
-const INITIAL: IntakeValues = { domain: "shopping", goal: "", max_spend: "", currency: "USD", deliver_by: "" };
+const INITIAL: IntakeValues = {
+  domain: "shopping",
+  goal: "",
+  max_spend: "",
+  currency: "USD",
+  deliver_by: "",
+  cp_name: "",
+  cp_email: "",
+  cp_phone: "",
+  cp_whatsapp: false,
+  cp_website: "",
+  cp_endpoint: "",
+};
 
 const INPUT =
   "w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-paypal-lightblue focus:outline-none focus:ring-1 focus:ring-paypal-lightblue";
@@ -70,7 +82,11 @@ export function IntakeForm() {
 
   function set<K extends keyof IntakeValues>(key: K, value: IntakeValues[K]) {
     setValues((prev) => ({ ...prev, [key]: value }));
-    setErrors((prev) => ({ ...prev, [key]: undefined }));
+    setErrors((prev) => ({
+      ...prev,
+      [key]: undefined,
+      ...(key === "cp_email" || key === "cp_phone" ? { cp_contact: undefined } : {}),
+    }));
   }
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
@@ -190,6 +206,10 @@ export function IntakeForm() {
             />
           </Field>
 
+          {values.domain !== "shopping" ? (
+            <CounterpartyFields values={values} errors={errors} set={set} />
+          ) : null}
+
           {error ? (
             <p role="alert" className="flex items-start gap-2 text-sm text-red-700">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
@@ -212,5 +232,70 @@ export function IntakeForm() {
         </form>
       </CardBody>
     </Card>
+  );
+}
+
+type SetField = <K extends keyof IntakeValues>(key: K, value: IntakeValues[K]) => void;
+type TextKey = "cp_name" | "cp_email" | "cp_phone" | "cp_website" | "cp_endpoint";
+
+/** Contractor / agent-to-agent: the agent negotiates only with who the user names here. */
+function CounterpartyFields({ values, errors, set }: { values: IntakeValues; errors: IntakeErrors; set: SetField }) {
+  const agent = values.domain === "a2a";
+  const text = (key: TextKey) => ({
+    id: key,
+    value: values[key],
+    onChange: (e: ChangeEvent<HTMLInputElement>) => set(key, e.target.value),
+    "aria-invalid": Boolean(errors[key]),
+    "aria-describedby": errors[key] ? `${key}-error` : undefined,
+    className: INPUT,
+  });
+
+  return (
+    <fieldset className="space-y-4 rounded-lg border border-slate-200 p-4">
+      <legend className="px-1 text-sm font-semibold text-slate-900">
+        {agent ? "Agent to negotiate with" : "Contractor to contact"}
+      </legend>
+      <p className="text-xs text-slate-500">
+        {agent
+          ? "I send the request to this agent's endpoint and wait for its quote. Your budget is never shared."
+          : "I ask this contractor for a quote and wait for their reply, which can take hours or days. If they don't answer, I'll ask you what to do. Your budget is never shared."}
+      </p>
+      <Field id="cp_name" label={agent ? "Agent name" : "Contractor name"} error={errors.cp_name}>
+        <input {...text("cp_name")} maxLength={120} autoComplete="off" />
+      </Field>
+      {agent ? (
+        <Field id="cp_endpoint" label="Agent endpoint (https)" error={errors.cp_endpoint}>
+          <input {...text("cp_endpoint")} type="url" inputMode="url" placeholder="https://agent.example.com/rpc" />
+        </Field>
+      ) : (
+        <>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field id="cp_email" label="Email" error={errors.cp_email}>
+              <input {...text("cp_email")} type="email" inputMode="email" autoComplete="off" />
+            </Field>
+            <Field id="cp_phone" label="Phone" hint="International format, e.g. +14155550123" error={errors.cp_phone}>
+              <input {...text("cp_phone")} type="tel" inputMode="tel" autoComplete="off" />
+            </Field>
+          </div>
+          <label className="flex items-center gap-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={values.cp_whatsapp}
+              onChange={(e) => set("cp_whatsapp", e.target.checked)}
+              className="h-4 w-4 rounded border-slate-300"
+            />
+            Message the phone on WhatsApp instead of SMS
+          </label>
+          {errors.cp_contact ? (
+            <p id="cp_contact-error" role="alert" className="text-xs text-red-700">
+              {errors.cp_contact}
+            </p>
+          ) : null}
+        </>
+      )}
+      <Field id="cp_website" label="Website or portfolio (optional)" error={errors.cp_website}>
+        <input {...text("cp_website")} type="url" inputMode="url" placeholder="https://" />
+      </Field>
+    </fieldset>
   );
 }
