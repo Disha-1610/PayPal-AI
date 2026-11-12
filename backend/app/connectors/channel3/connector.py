@@ -31,6 +31,11 @@ _IN_STOCK = "InStock"
 _TITLE_MAX = 200
 
 
+def _safe_url(url: str | None) -> str | None:
+    """Only http(s) links within the Candidate's length bound reach the browser."""
+    return url if url and url.startswith(("http://", "https://")) and len(url) <= 2048 else None
+
+
 def to_listing(product: Product) -> Listing:
     """Map a Channel3 product to the normalized Candidate (cheapest in-stock offer wins)."""
     in_stock = [o for o in product.offers if o.availability == _IN_STOCK and o.price.value is not None]
@@ -50,6 +55,7 @@ def to_listing(product: Product) -> Listing:
         currency=currency,
         rating=product.ratings.value if product.ratings else None,
         review_count=product.ratings.count if product.ratings else None,
+        product_url=_safe_url(best.url if best else None),
         attributes=attributes,
     )
     return Listing(candidate=candidate, description=product.description)

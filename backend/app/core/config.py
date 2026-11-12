@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     checkpoint_sqlite_path: str = "checkpoints.sqlite"
 
     llm_provider: str = "gemini"  # gemini | groq | cerebras | openrouter | openai_compat
-    llm_model: str = "gemini-2.5-flash"
+    llm_model: str = "gemini-3.5-flash"
     llm_api_key: SecretStr | None = None
     llm_base_url: str | None = None  # openai_compat only; groq/cerebras/openrouter have built-in defaults
     llm_timeout_seconds: float = 12.0  # per attempt; structured extraction/scoring answers are short

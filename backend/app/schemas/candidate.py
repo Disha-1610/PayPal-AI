@@ -43,6 +43,7 @@ class Candidate(BaseModel):
     return_window_days: int | None = Field(default=None, ge=0)
     available_by: datetime | None = Field(default=None, description="Delivery / service start date")
 
+    product_url: str | None = Field(default=None, max_length=2048, pattern=r"^https?://", description="Listing page the shopper can open")
     attributes: dict[str, AttributeValue] = Field(default_factory=dict)
     quality: dict[str, DataQuality] = Field(default_factory=dict, description="field name -> quality flag")
     text_refs: tuple[str, ...] = ()

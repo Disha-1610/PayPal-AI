@@ -86,6 +86,7 @@ class TaskState(TypedDict, total=False):
     evaluation: EvaluationReport
     relaxation_proposals: list[RelaxationProposal]
     selected_candidate_id: str
+    declined_candidate_ids: list[str]  # products the user declined at approval; excluded from the next pick
     order_id: str
     domain: str  # domain plug-in name; the Monitor loads its spec from this
     anchor_at: datetime  # when the order/engagement started; turns "within N days" into a date

@@ -9,6 +9,8 @@ export interface Candidate {
   /** ISO date promised by the seller. */
   delivery_by: string;
   in_stock: boolean;
+  /** Listing page on the store the product was found at. */
+  product_url?: string;
   /** Evaluator score, 0–100. */
   score: number;
   verdict: "viable" | "rejected";

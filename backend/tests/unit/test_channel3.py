@@ -165,3 +165,15 @@ async def test_checkout_is_not_supported_through_registry():
     request = CheckoutRequest(candidate_id="p1", amount=Decimal(10), currency="INR")
     with pytest.raises(ConnectorError, match="does not support 'checkout'"):
         await registry.checkout(auth, "channel3", request, [])
+
+
+def test_listing_links_to_the_cheapest_in_stock_offer_and_drops_non_http_links():
+    from app.connectors.channel3.connector import to_listing
+    from app.connectors.channel3.schemas import Product
+
+    linked = {**PRODUCT, "offers": [
+        {**PRODUCT["offers"][0], "url": "https://a.com/p"}, {**PRODUCT["offers"][1], "url": "https://b.com/p"},
+    ]}
+    assert to_listing(Product.model_validate(linked)).candidate.product_url == "https://b.com/p"
+    unsafe = {**PRODUCT, "offers": [{**PRODUCT["offers"][1], "url": "javascript:alert(1)"}]}
+    assert to_listing(Product.model_validate(unsafe)).candidate.product_url is None

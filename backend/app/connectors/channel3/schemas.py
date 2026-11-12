@@ -26,6 +26,7 @@ class Price(_Wire):
 
 class Offer(_Wire):
     domain: str
+    url: str | None = None
     price: Price
     availability: str
 

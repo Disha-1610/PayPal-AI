@@ -66,7 +66,7 @@ Domain behaviour lives in small adapters (`backend/app/domains`, `backend/app/co
 
 ## How AI is used
 
-- **Model:** Google **Gemini** (`gemini-2.5-flash` by default, configurable) via `google-genai`, behind a provider gateway (`backend/app/llm`).
+- **Model:** Google **Gemini** (`gemini-3.5-flash` by default, configurable) via `google-genai`, behind a provider gateway (`backend/app/llm`).
 - **Orchestration:** **LangGraph** state graph with durable checkpoints (SQLite / Postgres) and `interrupt()` for human-in-the-loop pauses.
 - **Agents** (prompts in `backend/app/orchestrator/prompts`):
   - **Intent**: full extraction once, then constraint *diffs* only.

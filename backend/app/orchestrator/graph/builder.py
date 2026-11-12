@@ -8,6 +8,7 @@ executor step. Nodes never call each other. Two user interrupts bracket the mone
     discovery loop -> guard_evaluate -> evaluate -> (select | discovery | coordinator)
     coordinator -> (discovery | switch_candidate | adapt | stop_report)
     select -> guard_execute -> recheck -> (request_approval | evaluate | adapt) -> await_approval
+    await_approval -> decline_candidate -> choose_candidate -> guard_execute   (the user declined the product)
     await_approval -> guard_pay -> place_order -> await_payer -> settle -> (end | discovery | await_payer)
 
 Every Guard failure, an exhausted Coordinator/Adapt, a rejected approval and the global limits (``GraphLimits``:
@@ -104,6 +105,9 @@ from app.schemas.intent import IntentResult, IntentStatus
 from app.schemas.recheck import MismatchAction
 from app.schemas.negotiator import NegotiatorPolicy, NegotiatorRoute
 from app.schemas.state import TaskState
+
+
+_MAX_CHOICES = 10  # options listed when the user must pick a product
 
 
 @dataclass(frozen=True)
@@ -291,15 +295,17 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
         return {"selected_candidate_id": ranked[0].candidate_id, "status": "selected"}
 
     def choose_candidate(state: TaskState) -> dict[str, object]:
-        """Pause for the user's pick among near-tied candidates. Nothing above ``interrupt`` has side effects."""
-        ranked = [r.candidate_id for r in state["evaluation"].ranked]
+        """Pause for the user's pick (a near tie, or after they declined a product). Nothing above ``interrupt`` has side effects."""
+        declined = set(state.get("declined_candidate_ids", []))
+        ranked = [r.candidate_id for r in state["evaluation"].ranked if r.candidate_id not in declined][:_MAX_CHOICES]
         titles = {c.candidate_id: c.title for c in state.get("candidates", [])}
         lines = [f"{i}. {titles.get(cid, cid)[:80]}" for i, cid in enumerate(ranked, start=1)]
-        raw = interrupt({
-            "type": "candidate_choice", "options": ranked,
-            "message": "These options are nearly tied. Reply with the number of the one you want:\n" + "\n".join(lines),
-        })
-        picked = _pick_candidate(raw, ranked)
+        intro = (
+            "Okay, I won't buy that one. Reply with the number of the product you want instead:"
+            if declined else "These options are nearly tied. Reply with the number of the one you want:"
+        )
+        raw = interrupt({"type": "candidate_choice", "options": ranked, "message": intro + "\n" + "\n".join(lines)})
+        picked = _pick_candidate(raw, ranked, titles)
         if picked is None:
             return {"status": "choice_invalid", "errors": ["the reply did not name one of the offered options"]}
         return {"selected_candidate_id": picked, "status": "selected"}
@@ -339,7 +345,24 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
     def request_approval(state: TaskState) -> dict[str, object]:
         return request_approval_node(state, audit=scope(state))
 
+    def can_reselect(state: TaskState) -> bool:
+        """A one-shot purchase can switch to another product; plans, milestones and deals cannot."""
+        return d.milestones is None and not d.plugin.negotiates and bool(state.get("selected_candidate_id")) and "evaluation" in state
+
+    def decline_candidate(state: TaskState) -> dict[str, object]:
+        """The user declined the product: remember it and let them pick another from the evaluated list."""
+        declined = [*state.get("declined_candidate_ids", []), state["selected_candidate_id"]]
+        remaining = [r for r in state["evaluation"].ranked if r.candidate_id not in declined]
+        if not remaining:
+            return {"declined_candidate_ids": declined, "status": "failed", "errors": ["no other product is left to choose from"]}
+        return {"declined_candidate_ids": declined, "status": "choosing"}
+
+    def after_decline(state: TaskState) -> str:
+        return "stop_report" if state.get("status") == "failed" else "choose_candidate"
+
     def after_approval(state: TaskState) -> str:
+        if state.get("status") == "approval_rejected" and can_reselect(state):
+            return "decline_candidate"
         if state.get("status") != "approved":
             return "stop_report"
         if d.milestones is not None and not state.get("milestone_seq"):
@@ -510,7 +533,7 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
         "intent": intent, "ask_user": ask_user, "adapt": adapt, "discovery_start": discovery_start,
         "discovery_search": discovery_search, "discovery_adapt": discovery_adapt, "discovery_advance": discovery_advance,
         "discovery_finish": discovery_finish, "evaluate": evaluate, "coordinator": coordinator, "select": select, "choose_candidate": choose_candidate,
-        "switch_candidate": switch_candidate, "recheck": recheck, "request_approval": request_approval,
+        "switch_candidate": switch_candidate, "decline_candidate": decline_candidate, "recheck": recheck, "request_approval": request_approval,
         "await_approval": await_approval_node, "place_order": place_order, "await_payer": await_payer, "settle": settle,
         "monitor_intake": monitor_intake, "guard_negotiate": guard_negotiate, "negotiate": negotiate,
         "send_counter": send_counter, "await_counterparty": await_counterparty, "negotiation_intake": negotiation_intake,
@@ -541,7 +564,8 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
     graph.add_conditional_edges("propose_plan", after_propose_plan, ["recheck", "stop_report"])
     graph.add_conditional_edges("recheck", after_recheck, ["request_approval", "evaluate", "adapt"])
     graph.add_edge("request_approval", "await_approval")
-    graph.add_conditional_edges("await_approval", after_approval, ["guard_pay", "guard_plan", "stop_report"])
+    graph.add_conditional_edges("await_approval", after_approval, ["guard_pay", "guard_plan", "decline_candidate", "stop_report"])
+    graph.add_conditional_edges("decline_candidate", after_decline, ["choose_candidate", "stop_report"])
     graph.add_conditional_edges(
         "guard_pay", guarded("milestone_pay" if d.milestones else "place_order"), ["place_order", "milestone_pay", "stop_report"]
     )
@@ -564,13 +588,16 @@ def build_graph(deps: GraphDeps, checkpointer: BaseCheckpointSaver | None = None
     return graph.compile(checkpointer=checkpointer)
 
 
-def _pick_candidate(raw: object, ranked: list[str]) -> str | None:
-    """The user's reply as a 1-based option number or an exact candidate id; anything else picks nothing."""
+def _pick_candidate(raw: object, ranked: list[str], titles: dict[str, str] | None = None) -> str | None:
+    """The user's reply as a 1-based option number, an exact candidate id, or an exact title; anything else picks nothing."""
     text = str(raw.get("text", "")) if isinstance(raw, dict) else str(raw)
     text = text.strip().rstrip(".")
     if text.isdigit() and 1 <= int(text) <= len(ranked):
         return ranked[int(text) - 1]
-    return text if text in ranked else None
+    if text in ranked:
+        return text
+    by_title = [cid for cid in ranked if titles and titles.get(cid, "").casefold() == text.casefold()]
+    return by_title[0] if len(by_title) == 1 else None
 
 
 def _executor_target(route: ExecutorRoute) -> str:

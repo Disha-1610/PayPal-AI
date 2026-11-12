@@ -145,3 +145,36 @@ def test_question_text_reads_choice_prompts():
     snap = RunSnapshot(values={}, next=("choose_candidate",), interrupts=({"message": "pick one"},))
     assert question_text(snap) == "pick one"
 
+
+async def _resume_quietly(runs) -> None:
+    try:
+        await runs._invoke(runs._graph, None, CONFIG)
+    except Exception:
+        pass  # the harness's mocked session factory is not awaitable; the checkpoint is what matters
+
+
+async def test_declined_product_lets_the_user_pick_another_instead_of_ending_the_run():
+    runs = await _paused_after_evaluate(_report("amz-1", "amz-2", "amz-3", needs_choice=False))
+    update = {"selected_candidate_id": "amz-1", "status": "approval_rejected", "pending_approval": None}
+    await runs._graph.aupdate_state(CONFIG, update, as_node="await_approval")
+    await _resume_quietly(runs)
+    snap = await runs.snapshot("r1")
+    assert snap.next == ("choose_candidate",) and snap.values["declined_candidate_ids"] == ["amz-1"]
+    text = question_text(snap)
+    assert "2." in text and "3." not in text  # the declined product is not offered again
+    snap = await _settle(runs, "1")
+    assert snap.values["selected_candidate_id"] == "amz-2"
+
+
+async def test_declining_the_only_product_ends_the_run():
+    runs = await _paused_after_evaluate(_report("amz-1", needs_choice=False))
+    update = {"selected_candidate_id": "amz-1", "status": "approval_rejected", "pending_approval": None}
+    await runs._graph.aupdate_state(CONFIG, update, as_node="await_approval")
+    await _resume_quietly(runs)
+    snap = await runs.snapshot("r1")
+    assert not snap.next and snap.values["status"] in {"failed", "stopped"}
+
+
+def test_choice_parsing_accepts_an_exact_title():
+    assert _pick_candidate("beta phone", ["a", "b"], {"a": "Alpha", "b": "Beta Phone"}) == "b"
+    assert _pick_candidate("phone", ["a", "b"], {"a": "Alpha", "b": "Beta Phone"}) is None

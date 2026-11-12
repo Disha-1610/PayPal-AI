@@ -88,6 +88,8 @@ class GeminiProvider:
         except errors.APIError as exc:
             if exc.code in _TRANSIENT_HTTP_CODES:
                 raise LLMTransientError(f"Gemini API error {exc.code}") from exc
+            if "API_KEY_INVALID" in str(exc):
+                raise LLMError("Gemini API key is invalid; set a valid LLM_API_KEY in backend/.env") from exc
             raise LLMError(f"Gemini API error {exc.code}") from exc
         except OSError as exc:  # connection resets / DNS failures
             raise LLMTransientError("Gemini network error") from exc

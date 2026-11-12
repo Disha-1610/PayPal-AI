@@ -63,6 +63,7 @@ class CandidateView(BaseModel):
     review_count: int
     delivery_by: str
     in_stock: bool
+    product_url: str | None = None
     score: float
     verdict: Literal["viable", "rejected"]
     rejection_reason: str | None = None
@@ -177,6 +178,7 @@ def candidate_views(candidates: Sequence[Candidate], report: EvaluationReport | 
             CandidateView(
                 id=c.candidate_id, title=c.title, seller=c.source, price_usd=float(c.total_cost or 0), rating=c.rating or 0.0,
                 review_count=c.review_count or 0, delivery_by=_day(c.available_by), in_stock=bool(c.attributes.get("in_stock", True)),
+                product_url=c.product_url,
                 score=round(scores.get(c.candidate_id, 0.0), 1), verdict="viable" if viable else "rejected",
                 rejection_reason=None if viable else reasons.get(c.candidate_id, "not viable"),
             )

@@ -32,7 +32,18 @@ export function CandidateCard({
           </span>
         ) : null}
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium text-slate-900">{candidate.title}</p>
+          {candidate.product_url ? (
+            <a
+              href={candidate.product_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="block truncate text-sm font-medium text-slate-900 hover:text-paypal-lightblue hover:underline"
+            >
+              {candidate.title}
+            </a>
+          ) : (
+            <p className="truncate text-sm font-medium text-slate-900">{candidate.title}</p>
+          )}
           <p className="text-xs text-slate-500">{candidate.seller}</p>
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-700">
             <span className="font-semibold">{formatMoney(candidate.price_usd, currency)}</span>
